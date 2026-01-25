@@ -34,7 +34,7 @@ class ObsidianFormatter:
             Sanitized filename.
         """
         # Replace invalid characters with underscores
-        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        #filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
         # Remove leading/trailing spaces and dots
         filename = filename.strip('. ')
         # Limit length
@@ -58,9 +58,9 @@ class ObsidianFormatter:
         Returns:
             Formatted filename.
         """
-        date_str = meeting_date.strftime("%Y-%m-%d_%H-%M")
+        date_str = meeting_date.strftime("%Y-%m-%d")
         sanitized_title = ObsidianFormatter.sanitize_filename(title)
-        return f"{date_str}_{platform}_{sanitized_title}.md"
+        return f"{sanitized_title} - {date_str}.md"
 
     @staticmethod
     def create_frontmatter(metadata: Dict[str, Any]) -> str:
@@ -72,27 +72,47 @@ class ObsidianFormatter:
         Returns:
             YAML frontmatter as a string.
         """
-        # Build frontmatter dict with only non-None values
+        # Build frontmatter dict with specific structure
         frontmatter = {}
 
+        # Fixed type field
+        frontmatter["type"] = "ainote"
+
+        # Date and time fields
         if "date" in metadata and metadata["date"]:
             if isinstance(metadata["date"], datetime):
-                frontmatter["date"] = metadata["date"].isoformat()
+                frontmatter["date"] = metadata["date"].strftime("%Y-%m-%d")
+                frontmatter["time"] = metadata["date"].strftime("%H:%M")
             else:
                 frontmatter["date"] = metadata["date"]
+                frontmatter["time"] = ""
+        else:
+            frontmatter["date"] = ""
+            frontmatter["time"] = ""
 
-        if "platform" in metadata:
-            frontmatter["platform"] = metadata["platform"]
-
-        if "title" in metadata and metadata["title"]:
-            frontmatter["title"] = metadata["title"]
-
+        # Attendees (renamed from participants)
         if "participants" in metadata and metadata["participants"]:
-            frontmatter["participants"] = metadata["participants"]
+            frontmatter["attendees"] = metadata["participants"]
+        else:
+            frontmatter["attendees"] = []
 
-        if "duration" in metadata and metadata["duration"]:
-            frontmatter["duration"] = metadata["duration"]
+        # Meeting type - empty list for user to fill in
+        frontmatter["meeting-type"] = []
 
+        # AI platform mapping
+        platform = metadata.get("platform", "")
+        ai_map = {
+            "Heypocket": "pocket",
+            "Zoom": "zoom",
+            "GoogleMeet": "gemini"
+        }
+        ai_value = ai_map.get(platform, "")
+        frontmatter["ai"] = [ai_value] if ai_value else []
+
+        # Link - empty for now
+        frontmatter["link"] = ""
+
+        # Tags
         if "tags" in metadata and metadata["tags"]:
             frontmatter["tags"] = metadata["tags"]
         else:

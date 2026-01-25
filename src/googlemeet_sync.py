@@ -281,12 +281,26 @@ class GoogleMeetSync:
         formatter = ObsidianFormatter(output_path)
 
         with StateManager() as state_manager:
-            # Use last sync time if no since parameter provided
-            if since is None:
-                since = state_manager.get_last_sync_time("GoogleMeet")
+            # Determine which date to use for fetching
+            last_sync_time = state_manager.get_last_sync_time("GoogleMeet")
+
+            if since is not None:
+                # Explicit --since parameter provided, use it
+                # Use the earlier of the two dates to ensure we don't miss anything
+                if last_sync_time and last_sync_time < since:
+                    fetch_since = last_sync_time
+                    logger.info(f"Using last sync time {last_sync_time.date()} (earlier than --since {since.date()})")
+                else:
+                    fetch_since = since
+                    logger.info(f"Using explicit --since date: {since.date()}")
+            else:
+                # No --since parameter, use last sync time
+                fetch_since = last_sync_time
+                if fetch_since:
+                    logger.info(f"Using last sync time: {fetch_since.date()}")
 
             # Fetch meetings
-            meetings = self.fetch_meetings(since)
+            meetings = self.fetch_meetings(fetch_since)
 
             # Process each meeting
             count = 0

@@ -121,17 +121,20 @@ print_status "Starting Meetings2Obsidian sync"
 [[ -n "$DRY_RUN" ]] && print_warning "Running in DRY RUN mode - no files will be saved"
 echo ""
 
-# Track success/failure
-declare -A results
-total_meetings=0
+# Track success/failure (using simple variables for Bash 3.2 compatibility)
+heypocket_result="unknown"
+googlemeet_result="unknown"
+zoom_result="unknown"
+failed_count=0
 
 # Run Heypocket sync
 print_status "Syncing Heypocket meetings..."
 if python3 "$SCRIPT_DIR/src/heypocket_sync.py" $COMMON_ARGS; then
-    results[heypocket]="success"
+    heypocket_result="success"
     print_success "Heypocket sync completed"
 else
-    results[heypocket]="failed"
+    heypocket_result="failed"
+    failed_count=$((failed_count + 1))
     print_error "Heypocket sync failed"
 fi
 echo ""
@@ -139,10 +142,11 @@ echo ""
 # Run Google Meet sync
 print_status "Syncing Google Meet meetings..."
 if python3 "$SCRIPT_DIR/src/googlemeet_sync.py" $COMMON_ARGS; then
-    results[googlemeet]="success"
+    googlemeet_result="success"
     print_success "Google Meet sync completed"
 else
-    results[googlemeet]="failed"
+    googlemeet_result="failed"
+    failed_count=$((failed_count + 1))
     print_error "Google Meet sync failed"
 fi
 echo ""
@@ -150,10 +154,11 @@ echo ""
 # Run Zoom sync
 print_status "Syncing Zoom meetings..."
 if python3 "$SCRIPT_DIR/src/zoom_sync.py" $COMMON_ARGS; then
-    results[zoom]="success"
+    zoom_result="success"
     print_success "Zoom sync completed"
 else
-    results[zoom]="failed"
+    zoom_result="failed"
+    failed_count=$((failed_count + 1))
     print_error "Zoom sync failed"
 fi
 echo ""
@@ -162,22 +167,28 @@ echo ""
 echo "========================================"
 print_status "Sync Summary"
 echo "========================================"
-for platform in heypocket googlemeet zoom; do
-    if [[ "${results[$platform]}" == "success" ]]; then
-        print_success "$platform: ✓"
-    else
-        print_error "$platform: ✗"
-    fi
-done
+if [[ "$heypocket_result" == "success" ]]; then
+    print_success "heypocket: ✓"
+else
+    print_error "heypocket: ✗"
+fi
+if [[ "$googlemeet_result" == "success" ]]; then
+    print_success "googlemeet: ✓"
+else
+    print_error "googlemeet: ✗"
+fi
+if [[ "$zoom_result" == "success" ]]; then
+    print_success "zoom: ✓"
+else
+    print_error "zoom: ✗"
+fi
 echo "========================================"
 
 # Exit with error if any sync failed
-for result in "${results[@]}"; do
-    if [[ "$result" == "failed" ]]; then
-        print_warning "Some syncs failed. Check logs for details."
-        exit 1
-    fi
-done
+if [[ $failed_count -gt 0 ]]; then
+    print_warning "Some syncs failed. Check logs for details."
+    exit 1
+fi
 
 print_success "All syncs completed successfully!"
 exit 0
