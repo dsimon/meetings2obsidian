@@ -1,0 +1,55 @@
+# Meetings2Obsidian Configuration File
+# Copy this file to config.yaml and customize for your environment
+
+# Obsidian vault settings
+obsidian_vault_path: /path/to/your/obsidian/vault
+output_folder: Meetings  # Folder within vault to save meeting notes
+
+# Platform configurations
+platforms:
+  # Heypocket - API-based sync
+  heypocket:
+    enabled: true
+    api_key: YOUR_HEYPOCKET_API_KEY_HERE  # Get from Heypocket dashboard
+
+  # Google Meet - Browser automation
+  googlemeet:
+    enabled: true
+    browser:
+      # Optional: Path to Chrome user data directory for persistent login
+      # macOS example: /Users/username/Library/Application Support/Google/Chrome/Default
+      # Linux example: /home/username/.config/google-chrome/Default
+      # Windows example: C:\Users\username\AppData\Local\Google\Chrome\User Data\Default
+      user_data_dir: null  # Set to null to use default browser
+
+  # Zoom - Browser automation
+  zoom:
+    enabled: true
+    browser:
+      # Optional: Path to Chrome user data directory for persistent login
+      # Same format as googlemeet above
+      user_data_dir: null  # Set to null to use default browser
+
+# Date filters (optional)
+# Uncomment to only fetch meetings within a date range
+# date_filters:
+#   start_date: 2024-01-01  # ISO format: YYYY-MM-DD
+#   end_date: 2024-12-31
+
+# Formatting preferences
+formatting:
+  # Default tags to add to all meetings
+  default_tags:
+    - meeting
+    - sync
+
+  # Include participant information if available
+  include_participants: true
+
+  # Include meeting duration if available
+  include_duration: true
+
+# Logging configuration
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR
+  log_file: meetings2obsidian.log  # Optional log file path
