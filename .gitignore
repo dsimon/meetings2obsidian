@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# Conda
+.conda/
+
+# Configuration (contains sensitive data)
+config.yaml
+
+# OAuth tokens (contains sensitive credentials)
+zoom_tokens.json
+
+# State database
+meetings_state.db
+*.db
+
+# Logs
+*.log
+meetings2obsidian.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playwright
+.playwright/
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/

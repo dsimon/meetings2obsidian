@@ -5,12 +5,15 @@ A command-line tool that downloads AI-generated meeting summaries from multiple 
 ## Features
 
 - **Multi-platform support**: Sync meetings from Heypocket, Google Meet, and Zoom
-- **Obsidian-ready formatting**: Automatic markdown formatting with YAML frontmatter
+- **Obsidian-ready formatting**: Automatic markdown formatting with custom YAML frontmatter template
 - **Duplicate prevention**: Tracks downloaded meetings to avoid duplicates
 - **Flexible configuration**: YAML-based configuration with platform-specific settings
-- **Browser automation**: Uses existing browser sessions for Google Meet and Zoom (no separate login required)
-- **API integration**: Direct API access for Heypocket
+- **API integration**: Direct API access for Heypocket and Zoom
+- **OAuth 2.0 authentication**: Secure token-based authentication for Zoom with automatic refresh
+- **Browser automation**: Uses existing browser sessions for Google Meet (no separate login required)
 - **Incremental sync**: Only downloads new meetings since last sync
+- **Timezone conversion**: Automatically converts all timestamps from UTC to local timezone
+- **Custom frontmatter**: Structured metadata with type, date, time, attendees, meeting-type, ai platform tags, and links
 
 ## Requirements
 
@@ -100,15 +103,24 @@ platforms:
 
 Set to `null` to use a fresh browser session (you'll need to log in each time).
 
-#### Zoom (Browser automation)
+#### Zoom (API-based with OAuth 2.0)
 
 ```yaml
 platforms:
   zoom:
     enabled: true
-    browser:
-      user_data_dir: null  # Same format as Google Meet
+    client_id: YOUR_ZOOM_CLIENT_ID_HERE
+    client_secret: YOUR_ZOOM_CLIENT_SECRET_HERE
+    redirect_uri: http://localhost:8080/oauth/callback
 ```
+
+Zoom meeting summaries are accessed through the Cloud Recordings API using OAuth 2.0 authentication.
+
+**Setup instructions:**
+1. See [ZOOM_SETUP.md](ZOOM_SETUP.md) for detailed instructions on creating a Zoom OAuth app
+2. Add your Client ID and Client Secret to `config.yaml`
+3. On first run, a browser window will open for you to authorize the app
+4. Tokens are stored locally in `zoom_tokens.json` (automatically refreshed)
 
 ## Usage
 
@@ -164,33 +176,38 @@ Meeting notes are saved as markdown files with the following format:
 
 ### File naming
 
-```
-YYYY-MM-DD_HH-MM_[Platform]_[Meeting-Title].md
+```text
+{title} - {date}.md
 ```
 
-Example: `2024-01-25_14-30_Zoom_Weekly_Team_Sync.md`
+Example: `Weekly Team Sync - 2024-01-25.md`
+
+**Note**: All dates and times are automatically converted from UTC to your local timezone.
 
 ### File content
 
 ```markdown
 ---
-date: 2024-01-25T14:30:00
-platform: Zoom
-title: Weekly Team Sync
-participants:
+type: ainote
+date: 2024-01-25
+time: 14:30
+attendees:
   - Alice Johnson
   - Bob Smith
   - Carol Williams
-duration: 45 minutes
+meeting-type: []
+ai:
+  - zoom
+link: ""
 tags:
   - meeting
   - zoom
   - team-sync
 ---
 
-# Meeting Summary
+## Summary
 
-[Meeting content with preserved formatting]
+[AI-generated meeting summary with preserved formatting]
 
 ## Key Points
 - Point 1
@@ -204,9 +221,23 @@ tags:
 [Project Dashboard](https://example.com/dashboard)
 ```
 
+### Frontmatter Fields
+
+- **type**: Always set to `ainote` (AI-generated note)
+- **date**: Meeting date in YYYY-MM-DD format (local timezone)
+- **time**: Meeting time in HH:MM format (local timezone, 24-hour)
+- **attendees**: List of meeting participants (when available)
+- **meeting-type**: Empty list for user to categorize (e.g., standup, 1-on-1, etc.)
+- **ai**: Platform that generated the summary:
+  - `pocket` for Heypocket
+  - `zoom` for Zoom
+  - `gemini` for Google Meet
+- **link**: Empty field for user to add meeting recording or related links
+- **tags**: Auto-generated tags including `meeting` and platform-specific tags
+
 ## Project Structure
 
-```
+```text
 meetings2obsidian/
 ├── README.md
 ├── requirements.txt
@@ -246,18 +277,30 @@ Make sure you've created `config.yaml` from the example:
 cp config.example.yaml config.yaml
 ```
 
-### Browser automation not working
+### Browser automation not working (Google Meet only)
 
-1. Ensure you're signed in to Google/Zoom in your Chrome browser
+1. Ensure you're signed in to Google in your Chrome browser
 2. Check that the `user_data_dir` path in config.yaml is correct
 3. Try setting `user_data_dir: null` to use a fresh browser session
 4. Make sure Playwright is installed: `playwright install chromium`
+
+### Zoom OAuth errors
+
+1. **"Invalid Client" error**: Verify Client ID and Client Secret are correct in `config.yaml`
+2. **"Invalid Scope" error**: Make sure you've added the required scopes (`recording:read:admin` or `cloud_recording:read:list_user_recordings:admin`) to your Zoom app
+3. **Token expired**: The tool automatically refreshes tokens. If refresh fails, delete `zoom_tokens.json` and re-authenticate
+4. **No recordings found**: Ensure Cloud Recording is enabled in your Zoom account and AI Companion is generating summaries
 
 ### Heypocket API errors
 
 1. Verify your API key is correct in `config.yaml`
 2. Check that your API key has the necessary permissions
 3. Check for rate limiting (wait a few minutes and try again)
+4. If you see "No summary available" in your Obsidian notes:
+   - The tool extracts summaries from the `v2_summary.markdown` field
+   - Ensure your Heypocket recordings have AI-generated summaries enabled
+   - Use `--verbose` flag to see debug information about what fields are available
+   - Check the Heypocket dashboard to confirm summaries are being generated
 
 ### Obsidian vault path errors
 
@@ -288,8 +331,9 @@ pytest tests/
 
 ## Limitations
 
-- Browser automation depends on the current page structure of Google Meet and Zoom, which may change
-- Heypocket API access requires a valid API key
+- Browser automation (Google Meet) depends on the current page structure, which may change
+- API access requires valid credentials (API key for Heypocket, OAuth app for Zoom)
+- Zoom Cloud Recordings API can only fetch recordings within 1-month ranges (automatically handled)
 - Rate limits may apply depending on the platform
 - Meeting summaries are only available if the platform generates them
 

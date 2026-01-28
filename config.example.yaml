@@ -22,13 +22,16 @@ platforms:
       # Windows example: C:\Users\username\AppData\Local\Google\Chrome\User Data\Default
       user_data_dir: null  # Set to null to use default browser
 
-  # Zoom - Browser automation
+  # Zoom - Browser automation (no OAuth app required)
   zoom:
     enabled: true
     browser:
       # Optional: Path to Chrome user data directory for persistent login
-      # Same format as googlemeet above
-      user_data_dir: null  # Set to null to use default browser
+      # This allows the script to use your existing Zoom login session
+      # macOS example: /Users/username/Library/Application Support/Google/Chrome/Default
+      # Linux example: /home/username/.config/google-chrome/Default
+      # Windows example: C:\Users\username\AppData\Local\Google\Chrome\User Data\Default
+      user_data_dir: null  # Set to null to use default browser (will prompt for login)
 
 # Date filters (optional)
 # Uncomment to only fetch meetings within a date range

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Zoom meeting summary sync module."""
+"""Zoom meeting summary sync module using browser automation."""
 
 import argparse
 import logging
+import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -22,10 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 class ZoomSync:
-    """Syncs meeting summaries from Zoom."""
+    """Syncs meeting summaries from Zoom using browser automation."""
 
-    ZOOM_RECORDINGS_URL = "https://zoom.us/recording"
-    ZOOM_MEETINGS_URL = "https://zoom.us/meeting"
+    # URLs to try for finding meeting summaries
+    ZOOM_SUMMARIES_URLS = [
+        "https://zoom.us/user/meeting/summary#/list",  # User-provided URL for meeting summaries
+    ]
+    ZOOM_LOGIN_URL = "https://zoom.us/signin"
 
     def __init__(self, config: ConfigLoader, dry_run: bool = False):
         """Initialize Zoom sync.
@@ -37,213 +41,978 @@ class ZoomSync:
         self.config = config
         self.dry_run = dry_run
         self.platform_config = config.get_platform_config("zoom")
-        self.browser: Optional[Browser] = None
+        self.browser = None
+        self.context = None
         self.page: Optional[Page] = None
 
-    def _init_browser(self, playwright) -> Browser:
+    def _init_browser(self, playwright) -> None:
         """Initialize browser with existing profile.
 
         Args:
             playwright: Playwright instance.
-
-        Returns:
-            Browser instance.
         """
-        # Try to use existing Chrome profile
         browser_config = self.platform_config.get("browser", {})
         user_data_dir = browser_config.get("user_data_dir")
 
         if user_data_dir:
             logger.info(f"Using browser profile: {user_data_dir}")
-            browser = playwright.chromium.launch_persistent_context(
+            self.context = playwright.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 headless=False,
                 channel="chrome"
             )
+            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         else:
-            logger.info("Using default browser context")
-            browser = playwright.chromium.launch(headless=False, channel="chrome")
+            logger.info("Using default browser context (you may need to sign in)")
+            self.browser = playwright.chromium.launch(headless=False, channel="chrome")
+            self.context = self.browser.new_context()
+            self.page = self.context.new_page()
 
-        return browser
-
-    def _check_authentication(self, page: Page) -> bool:
+    def _check_authentication(self) -> bool:
         """Check if user is authenticated to Zoom.
-
-        Args:
-            page: Playwright page.
 
         Returns:
             True if authenticated, False otherwise.
         """
         try:
-            # Check for sign-in elements
-            page.wait_for_load_state("networkidle", timeout=10000)
+            self.page.wait_for_load_state("networkidle", timeout=15000)
 
-            # If we see a sign-in button, we're not authenticated
-            if page.locator("text=/Sign In/i").count() > 0:
+            # Check if we're on the login page
+            current_url = self.page.url
+            if "signin" in current_url or "login" in current_url:
+                logger.warning("Not authenticated - on login page")
                 return False
 
+            # Check for sign-in button or login form
+            login_indicators = [
+                "text=/Sign In/i",
+                "text=/Log In/i",
+                "#email",  # Login form email field
+                "[name='email']"
+            ]
+
+            for selector in login_indicators:
+                try:
+                    if self.page.locator(selector).count() > 0:
+                        logger.warning(f"Found login indicator: {selector}")
+                        return False
+                except Exception:
+                    pass
+
             return True
+
         except PlaywrightTimeoutError:
             logger.warning("Timeout checking authentication")
             return False
 
-    def fetch_meetings(self, since: Optional[datetime] = None) -> List[Dict[str, Any]]:
-        """Fetch meetings from Zoom.
+    def _wait_for_user_login(self, timeout: int = 120) -> bool:
+        """Wait for user to complete manual login.
 
         Args:
-            since: Optional datetime to fetch meetings since.
+            timeout: Maximum seconds to wait for login.
 
         Returns:
-            List of meeting dictionaries.
+            True if login successful, False if timeout.
         """
-        meetings = []
+        logger.info("=" * 60)
+        logger.info("MANUAL LOGIN REQUIRED")
+        logger.info("Please sign in to Zoom in the browser window.")
+        logger.info(f"Waiting up to {timeout} seconds for login...")
+        logger.info("=" * 60)
+
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            time.sleep(2)
+
+            # SSO login may open new tabs/windows, refresh our page reference
+            try:
+                current_url = self.page.url
+            except Exception:
+                # Page reference is stale, try to get a new one
+                logger.debug("Page reference stale, refreshing...")
+                self._refresh_page_reference()
+                try:
+                    current_url = self.page.url
+                except Exception:
+                    continue
+
+            # Check if we've navigated to a Zoom page (not login)
+            if "zoom.us" in current_url or "zoom.com" in current_url:
+                if "signin" not in current_url and "login" not in current_url:
+                    # We're on a Zoom page that's not login
+                    if "recording" in current_url or "meetings" in current_url or "summaries" in current_url or "profile" in current_url:
+                        logger.info("Login successful!")
+                        return True
+
+            # Also check if we can detect authenticated state
+            try:
+                if self._check_authentication():
+                    logger.info("Login successful!")
+                    return True
+            except Exception as e:
+                logger.debug(f"Auth check failed: {e}")
+                continue
+
+        logger.error("Login timeout - please try again")
+        return False
+
+    def _refresh_page_reference(self) -> None:
+        """Refresh the page reference after login/SSO.
+
+        SSO login often opens new tabs or redirects the browser,
+        which can invalidate our original page reference.
+        This method gets the most recent valid page from the context.
+        """
+        if not self.context:
+            logger.warning("No browser context available")
+            return
+
+        try:
+            # Get all pages from the context
+            pages = self.context.pages
+            logger.debug(f"Context has {len(pages)} page(s)")
+
+            if not pages:
+                # No pages exist, create a new one
+                logger.info("No pages in context, creating new page")
+                self.page = self.context.new_page()
+                return
+
+            # Find the best page to use - prefer one that's on a Zoom domain
+            best_page = None
+            for page in reversed(pages):  # Check most recent first
+                try:
+                    url = page.url
+                    logger.debug(f"Page URL: {url}")
+                    if "zoom.us" in url or "zoom.com" in url:
+                        best_page = page
+                        break
+                except Exception as e:
+                    logger.debug(f"Could not access page URL: {e}")
+                    continue
+
+            if best_page:
+                self.page = best_page
+                logger.info(f"Using Zoom page: {self.page.url}")
+            elif pages:
+                # No Zoom page found, use the most recent one
+                self.page = pages[-1]
+                try:
+                    logger.info(f"Using most recent page: {self.page.url}")
+                except Exception:
+                    logger.info("Using most recent page (URL not accessible)")
+            else:
+                # Create a new page as fallback
+                logger.info("Creating new page as fallback")
+                self.page = self.context.new_page()
+
+        except Exception as e:
+            logger.warning(f"Error refreshing page reference: {e}")
+            # Try to create a new page as last resort
+            try:
+                self.page = self.context.new_page()
+                logger.info("Created new page after error")
+            except Exception as e2:
+                logger.error(f"Could not create new page: {e2}")
+
+    def _navigate_to_recordings(self) -> bool:
+        """Navigate to the summaries page.
+
+        Returns:
+            True if navigation successful, False otherwise.
+        """
+        try:
+            # Try the first URL to trigger login if needed
+            first_url = self.ZOOM_SUMMARIES_URLS[0]
+            logger.info(f"Navigating to Zoom summaries page: {first_url}")
+            self.page.goto(first_url, wait_until="domcontentloaded", timeout=30000)
+
+            # Wait a bit for any redirects
+            time.sleep(2)
+
+            # Check if we need to login
+            if not self._check_authentication():
+                if not self._wait_for_user_login():
+                    return False
+
+            # After login (especially SSO), the browser context may have changed
+            # SSO often opens new tabs or redirects, invalidating our page reference
+            # Wait for redirects to settle before continuing
+            logger.debug("Waiting for post-login redirects to settle...")
+            time.sleep(3)
+            self._refresh_page_reference()
+
+            # Check if we're already on a summaries page after login redirect
+            try:
+                current_url = self.page.url
+                logger.debug(f"Current URL after login: {current_url}")
+                if "summary" in current_url and "zoom.us" in current_url:
+                    # Already on summaries page, wait for it to load
+                    logger.info("Already on summaries page, waiting for content to load...")
+                    self.page.wait_for_load_state("networkidle", timeout=30000)
+                    if self._page_has_summaries_content():
+                        logger.info(f"Successfully loaded summaries from: {current_url}")
+                        return True
+            except Exception as e:
+                logger.debug(f"Error checking current URL: {e}")
+
+            # Now try each URL until we find one that works
+            for url in self.ZOOM_SUMMARIES_URLS:
+                try:
+                    logger.info(f"Trying summaries URL: {url}")
+
+                    # Verify page is still valid before navigation
+                    try:
+                        _ = self.page.url
+                    except Exception:
+                        logger.warning("Page became invalid, refreshing reference...")
+                        self._refresh_page_reference()
+
+                    self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    self.page.wait_for_load_state("networkidle", timeout=30000)
+
+                    # Check for access restriction or error pages
+                    page_content = self.page.content()
+                    if "Access restricted" in page_content or "Access denied" in page_content:
+                        logger.warning(f"Access restricted at {url}, trying next URL...")
+                        continue
+
+                    # Check if we can see summaries-related content
+                    if self._page_has_summaries_content():
+                        logger.info(f"Successfully loaded summaries from: {url}")
+                        return True
+                    else:
+                        # Save debug info for troubleshooting
+                        logger.debug(f"Content check failed for {url}")
+                        self.page.screenshot(path="zoom_debug_content_check.png")
+                        logger.debug("Saved debug screenshot to zoom_debug_content_check.png")
+                except Exception as e:
+                    error_msg = str(e)
+                    # Check if navigation was interrupted by redirect to same/similar URL
+                    if "interrupted by another navigation" in error_msg:
+                        logger.debug("Navigation interrupted by redirect, waiting for page to settle...")
+                        time.sleep(2)
+                        try:
+                            self.page.wait_for_load_state("networkidle", timeout=15000)
+                            current_url = self.page.url
+                            logger.debug(f"Page settled at: {current_url}")
+                            if "summary" in current_url and "zoom.us" in current_url:
+                                if self._page_has_summaries_content():
+                                    logger.info(f"Successfully loaded summaries after redirect: {current_url}")
+                                    return True
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning(f"Error loading {url}: {e}")
+                    # Try refreshing page reference for next attempt
+                    try:
+                        self._refresh_page_reference()
+                    except Exception:
+                        pass
+                    continue
+
+            # If direct URLs don't work, try navigating via sidebar
+            logger.info("Trying to navigate via sidebar...")
+            if self._navigate_via_sidebar():
+                return True
+
+            logger.error("Could not access summaries at any known URL")
+            return False
+
+        except PlaywrightTimeoutError as e:
+            logger.error(f"Timeout navigating to summaries: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error navigating to summaries: {e}")
+            return False
+
+    def _navigate_via_sidebar(self) -> bool:
+        """Try to navigate to summaries via the sidebar menu.
+
+        Returns:
+            True if navigation successful, False otherwise.
+        """
+        try:
+            # First go to main Zoom page
+            self.page.goto("https://zoom.us/profile", wait_until="networkidle", timeout=30000)
+            time.sleep(2)
+
+            # Look for Summaries in sidebar (it's a top-level menu item)
+            summaries_selectors = [
+                "text=/^Summaries$/i",  # Exact match for "Summaries"
+                "a[href*='/summaries']",
+                "[class*='summaries']",
+                "text=/Summaries/i",
+            ]
+
+            for selector in summaries_selectors:
+                try:
+                    link = self.page.locator(selector).first
+                    if link.count() > 0:
+                        logger.info(f"Found Summaries link with selector: {selector}")
+                        link.click()
+                        self.page.wait_for_load_state("networkidle", timeout=15000)
+                        time.sleep(2)
+                        break
+                except Exception:
+                    continue
+
+            # Now look for My Summaries tab
+            my_summaries_selectors = [
+                "text=/My Summaries/i",
+                "a[href*='my']",
+                "[class*='my-summaries']",
+            ]
+
+            for selector in my_summaries_selectors:
+                try:
+                    link = self.page.locator(selector).first
+                    if link.count() > 0:
+                        logger.info(f"Found My Summaries link, clicking...")
+                        link.click()
+                        self.page.wait_for_load_state("networkidle", timeout=15000)
+                        time.sleep(2)
+
+                        if self._page_has_summaries_content():
+                            return True
+                except Exception:
+                    continue
+
+            # Check if we're already on a valid summaries page
+            if self._page_has_summaries_content():
+                return True
+
+            return False
+
+        except Exception as e:
+            logger.debug(f"Failed to navigate via sidebar: {e}")
+            return False
+
+    def _page_has_summaries_content(self) -> bool:
+        """Check if the current page appears to have summaries content.
+
+        Returns:
+            True if page appears to be a summaries page, False otherwise.
+        """
+        try:
+            # Look for common indicators of a summaries page
+            indicators = [
+                "text=/summary/i",
+                "text=/summaries/i",
+                "text=/my summaries/i",
+                "text=/meeting summary/i",
+                "[class*='summary']",
+                "[class*='Summary']",
+                "text=/no summaries/i",  # Even "no summaries" is valid
+                "text=/no results/i",    # Empty search results
+                "[aria-label*='summary']",
+                "text=/AI Companion/i",
+            ]
+
+            for indicator in indicators:
+                try:
+                    if self.page.locator(indicator).count() > 0:
+                        return True
+                except Exception:
+                    continue
+
+            return False
+        except Exception:
+            return False
+
+    def _try_other_tabs(self) -> bool:
+        """Try clicking on other tabs like 'Shared with me' or 'All'.
+
+        Returns:
+            True if found content in another tab, False otherwise.
+        """
+        tabs_to_try = [
+            "text=/Shared with me/i",
+            "text=/All summaries/i",
+            "text=/All/i",
+            "text=/My Summaries/i",
+        ]
+
+        for tab_selector in tabs_to_try:
+            try:
+                tab = self.page.locator(tab_selector).first
+                if tab.count() > 0:
+                    logger.info(f"Trying tab: {tab_selector}")
+                    tab.click()
+                    self.page.wait_for_load_state("networkidle", timeout=10000)
+                    time.sleep(2)
+                    return True
+            except Exception as e:
+                logger.debug(f"Could not click tab {tab_selector}: {e}")
+                continue
+
+        return False
+
+    def _set_date_filter(self, since: Optional[datetime]) -> None:
+        """Set date filter on recordings page if supported.
+
+        Args:
+            since: Start date for filtering.
+        """
+        if not since:
+            return
+
+        try:
+            # Look for date filter controls
+            # Zoom's interface may have various date picker implementations
+            date_filter_selectors = [
+                "[data-testid='date-filter']",
+                ".date-picker",
+                "[aria-label*='date']",
+                "input[type='date']"
+            ]
+
+            for selector in date_filter_selectors:
+                if self.page.locator(selector).count() > 0:
+                    logger.info(f"Found date filter: {selector}")
+                    # Implementation would depend on Zoom's specific UI
+                    break
+
+        except Exception as e:
+            logger.debug(f"Could not set date filter: {e}")
+
+    def _extract_recordings_from_page(self) -> List[Dict[str, Any]]:
+        """Extract recording data from the current page.
+
+        Returns:
+            List of recording dictionaries.
+        """
+        recordings = []
+
+        try:
+            # First check if page shows "no results" or "no summaries"
+            no_results_indicators = [
+                "text=/No results found/i",
+                "text=/No summaries/i",
+                "text=/no meeting summaries/i",
+                "text=/You have no summaries/i",
+                "text=/No recordings/i",
+            ]
+
+            for indicator in no_results_indicators:
+                try:
+                    if self.page.locator(indicator).count() > 0:
+                        logger.info("Page shows no recordings available")
+                        # Try other tabs before giving up
+                        if self._try_other_tabs():
+                            # Re-run extraction after switching tabs
+                            return self._extract_recordings_from_page_internal()
+                        return []
+                except Exception:
+                    continue
+
+            return self._extract_recordings_from_page_internal()
+
+        except Exception as e:
+            logger.error(f"Error extracting recordings: {e}")
+            return []
+
+    def _extract_recordings_from_page_internal(self) -> List[Dict[str, Any]]:
+        """Internal method to extract summary data from the current page.
+
+        Returns:
+            List of summary dictionaries.
+        """
+        recordings = []
+
+        try:
+            # Wait for summary list to appear
+            # Zoom uses a table with class zm-table__row for data rows
+            list_selectors = [
+                "tr.zm-table__row.normal-row",  # Primary: Zoom's table rows
+                "tr.zm-table__row",             # Fallback: any table row
+                ".zm-table__body tr",           # Table body rows
+                "table tbody tr",               # Generic table rows
+            ]
+
+            recording_elements = None
+            for selector in list_selectors:
+                try:
+                    self.page.wait_for_selector(selector, timeout=5000)
+                    elements = self.page.locator(selector).all()
+                    if elements:
+                        recording_elements = elements
+                        logger.debug(f"Found recordings with selector: {selector}")
+                        break
+                except PlaywrightTimeoutError:
+                    continue
+
+            if not recording_elements:
+                logger.warning("Could not find recording elements on page")
+                # Take screenshot and save HTML for debugging
+                self.page.screenshot(path="zoom_debug_page.png")
+                logger.debug("Saved debug screenshot to zoom_debug_page.png")
+                with open("zoom_debug_page.html", "w") as f:
+                    f.write(self.page.content())
+                logger.debug("Saved debug HTML to zoom_debug_page.html")
+                return []
+
+            logger.info(f"Found {len(recording_elements)} recording elements")
+
+            for element in recording_elements:
+                try:
+                    recording = self._extract_recording_data(element)
+                    if recording:
+                        recordings.append(recording)
+                except Exception as e:
+                    logger.warning(f"Failed to extract recording: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error extracting recordings: {e}")
+
+        return recordings
+
+    def _extract_recording_data(self, element) -> Optional[Dict[str, Any]]:
+        """Extract data from a single summary element.
+
+        Args:
+            element: Playwright locator for the summary element.
+
+        Returns:
+            Summary data dictionary or None.
+        """
+        try:
+            # Extract meeting title from topic-link button
+            title = "Untitled Meeting"
+            try:
+                # Primary: Get from topic-link button's aria-label or text
+                topic_btn = element.locator("button.topic-link").first
+                if topic_btn.count() > 0:
+                    # Try aria-label first (cleaner)
+                    aria_label = topic_btn.get_attribute("aria-label")
+                    if aria_label:
+                        title = aria_label.strip()
+                    else:
+                        # Fallback to inner text
+                        title = topic_btn.inner_text().strip()
+            except Exception:
+                pass
+
+            # If still no title, try other selectors
+            if title == "Untitled Meeting":
+                title_selectors = [
+                    "td:nth-child(2) .cell",  # Second column
+                    "[class*='topic']",
+                    "[class*='title']",
+                ]
+                for selector in title_selectors:
+                    try:
+                        title_el = element.locator(selector).first
+                        if title_el.count() > 0:
+                            text = title_el.inner_text().strip()
+                            if text and text != "Topic":
+                                title = text
+                                break
+                    except Exception:
+                        continue
+
+            # Extract date/time from column 5 (Date Created)
+            meeting_date = datetime.now()
+            try:
+                # Primary: Date Created column
+                date_el = element.locator("td:nth-child(5) .cell").first
+                if date_el.count() > 0:
+                    date_text = date_el.inner_text().strip()
+                    if date_text and "MM/DD" not in date_text:
+                        meeting_date = self._parse_date_text(date_text)
+            except Exception:
+                pass
+
+            # If date parsing failed, try other selectors
+            if meeting_date.date() == datetime.now().date():
+                date_selectors = [
+                    "[aria-describedby*='column_5'] .cell",
+                    "[class*='date']",
+                    "time",
+                ]
+                for selector in date_selectors:
+                    try:
+                        date_el = element.locator(selector).first
+                        if date_el.count() > 0:
+                            date_text = date_el.inner_text().strip()
+                            if date_text and "MM/DD" not in date_text:
+                                meeting_date = self._parse_date_text(date_text)
+                                break
+                    except Exception:
+                        continue
+
+            # Extract meeting ID from column 3
+            meeting_id = None
+            try:
+                id_el = element.locator("td:nth-child(3) .cell").first
+                if id_el.count() > 0:
+                    meeting_id = id_el.inner_text().strip().replace(" ", "")
+            except Exception:
+                pass
+
+            # Generate unique recording ID
+            if meeting_id:
+                recording_id = f"zoom_{meeting_id}"
+            else:
+                # Generate ID from title and date
+                recording_id = f"zoom_{meeting_date.strftime('%Y%m%d')}_{title[:50]}"
+
+            # Extract host from column 4
+            host = None
+            try:
+                host_el = element.locator("td:nth-child(4) .cell").first
+                if host_el.count() > 0:
+                    host = host_el.inner_text().strip()
+            except Exception:
+                pass
+
+            logger.debug(f"Extracted recording: {title} ({meeting_date.date()})")
+
+            return {
+                "id": recording_id,
+                "title": title,
+                "date": meeting_date,
+                "element": element,  # Keep reference for clicking into details
+                "duration": None,
+                "summary": None,  # Will be fetched from detail page
+                "participants": [host] if host else [],
+                "meeting_id": meeting_id,
+            }
+
+        except Exception as e:
+            logger.error(f"Error extracting recording data: {e}")
+            return None
+
+    def _parse_date_text(self, text: str) -> datetime:
+        """Parse date from various text formats.
+
+        Args:
+            text: Date text to parse.
+
+        Returns:
+            Parsed datetime.
+        """
+        # Common date formats Zoom might use
+        formats = [
+            "%b %d, %Y %I:%M %p",  # Jan 25, 2024 2:30 PM
+            "%B %d, %Y %I:%M %p",  # January 25, 2024 2:30 PM
+            "%m/%d/%Y %I:%M %p",   # 01/25/2024 2:30 PM
+            "%Y-%m-%d %H:%M",      # 2024-01-25 14:30
+            "%b %d, %Y",           # Jan 25, 2024
+            "%m/%d/%Y",            # 01/25/2024
+        ]
+
+        for fmt in formats:
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+
+        # If all formats fail, try to extract just the date part
+        try:
+            # Look for patterns like "Jan 25, 2024" or "01/25/2024"
+            date_match = re.search(r'(\w+ \d+, \d{4})', text)
+            if date_match:
+                return datetime.strptime(date_match.group(1), "%b %d, %Y")
+
+            date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', text)
+            if date_match:
+                return datetime.strptime(date_match.group(1), "%m/%d/%Y")
+        except Exception:
+            pass
+
+        logger.warning(f"Could not parse date: {text}")
+        return datetime.now()
+
+    def _fetch_recording_summary(self, recording: Dict[str, Any]) -> str:
+        """Fetch AI summary for a meeting by navigating to its detail page.
+
+        Args:
+            recording: Summary/meeting dictionary.
+
+        Returns:
+            Summary text or "No summary available".
+        """
+        try:
+            # Try to click into the summary detail page
+            element = recording.get("element")
+            if not element:
+                return "No summary available"
+
+            # Find and click the topic-link button (this is the clickable element in Zoom's UI)
+            link_selectors = [
+                "button.topic-link",  # Primary: Zoom's topic link button
+                "[class*='topic-link']",
+                "td:nth-child(2) button",  # Button in second column
+                "a[href*='summary']",
+                "a[href*='meeting']",
+            ]
+
+            link = None
+            for sel in link_selectors:
+                try:
+                    l = element.locator(sel).first
+                    if l.count() > 0:
+                        link = l
+                        logger.debug(f"Found clickable element with selector: {sel}")
+                        break
+                except Exception:
+                    continue
+
+            if not link:
+                logger.debug("No clickable link found for summary")
+                return "No summary available"
+
+            # Store current URL to navigate back
+            list_url = self.page.url
+
+            # Click to go to detail page
+            link.click()
+            self.page.wait_for_load_state("networkidle", timeout=15000)
+            time.sleep(1)  # Small delay for dynamic content
+
+            # Look for AI summary on detail page
+            summary = self._extract_summary_from_detail_page()
+
+            # Navigate back to list
+            self.page.goto(list_url, wait_until="networkidle", timeout=15000)
+
+            return summary
+
+        except Exception as e:
+            logger.warning(f"Error fetching summary: {e}")
+            return "No summary available"
+
+    def _extract_summary_from_detail_page(self) -> str:
+        """Extract AI summary from the summary detail page.
+
+        Returns:
+            Summary text or "No summary available".
+        """
+        # More specific selectors for Zoom's summary detail page
+        # Try to get the actual summary content, not the page wrapper
+        summary_selectors = [
+            "[class*='summary-detail'] [class*='content']",  # Summary detail content
+            "[class*='summaryDetail'] [class*='content']",
+            "[class*='meeting-summary-content']",
+            "[class*='summary-body']",
+            "[class*='summaryBody']",
+            "[class*='summary-text']",
+            "[class*='summaryText']",
+            "[class*='ai-summary-content']",
+            "[class*='recap-content']",
+            "[class*='recapContent']",
+            ".summary-detail__content",
+            "[data-testid*='summary-content']",
+        ]
+
+        for selector in summary_selectors:
+            try:
+                summary_el = self.page.locator(selector).first
+                if summary_el.count() > 0:
+                    text = summary_el.inner_text().strip()
+                    if text and len(text) > 50:  # Ensure it's substantial
+                        logger.debug(f"Found summary with selector: {selector}")
+                        return self._clean_summary_text(text)
+            except Exception:
+                continue
+
+        # Fallback: Look for the main content area but filter out headers
+        fallback_selectors = [
+            "[class*='summary']",
+            "[class*='Summary']",
+            "article",
+            "main [class*='content']",
+        ]
+
+        for selector in fallback_selectors:
+            try:
+                summary_el = self.page.locator(selector).first
+                if summary_el.count() > 0:
+                    text = summary_el.inner_text().strip()
+                    if text and len(text) > 50:
+                        logger.debug(f"Found summary with selector: {selector}")
+                        return self._clean_summary_text(text)
+            except Exception:
+                continue
+
+        # Try to find paragraph elements with substantial text
+        try:
+            paragraphs = self.page.locator("p").all()
+            summary_parts = []
+            for p in paragraphs:
+                text = p.inner_text().strip()
+                # Skip short lines that are likely headers/labels
+                if len(text) > 50 and ("." in text or ":" in text):
+                    summary_parts.append(text)
+            if summary_parts:
+                return "\n\n".join(summary_parts)
+        except Exception:
+            pass
+
+        logger.debug("No summary found on detail page")
+        return "No summary available"
+
+    def _clean_summary_text(self, text: str) -> str:
+        """Clean up summary text by removing navigation/header elements.
+
+        Args:
+            text: Raw summary text.
+
+        Returns:
+            Cleaned summary text.
+        """
+        lines = text.split('\n')
+        cleaned_lines = []
+
+        # Skip common header/navigation text
+        skip_patterns = [
+            "My Summaries",
+            "Shared with me",
+            "Trash",
+            "Meeting Summary for",  # We'll include the actual summary, not the title
+            "Back to",
+            "Share",
+            "Delete",
+            "Export",
+        ]
+
+        in_summary = False
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Check if this line should be skipped
+            skip = False
+            for pattern in skip_patterns:
+                if line.startswith(pattern) or line == pattern:
+                    skip = True
+                    break
+
+            if skip:
+                # If we see "Meeting Summary for", the actual content follows
+                if "Meeting Summary for" in line:
+                    in_summary = True
+                continue
+
+            # Include the line if it's substantial content
+            if len(line) > 20 or (in_summary and len(line) > 5):
+                cleaned_lines.append(line)
+                in_summary = True
+
+        result = '\n'.join(cleaned_lines)
+
+        # If cleaning removed everything, return original
+        if not result or len(result) < 50:
+            return text
+
+        return result
+
+    def fetch_recordings(self, since: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Fetch recordings from Zoom via browser.
+
+        Args:
+            since: Optional datetime to fetch recordings since.
+
+        Returns:
+            List of recording dictionaries.
+        """
+        all_recordings = []
 
         with sync_playwright() as playwright:
-            # Initialize browser
-            if self.platform_config.get("browser", {}).get("user_data_dir"):
-                context = self._init_browser(playwright)
-                self.page = context.pages[0] if context.pages else context.new_page()
-            else:
-                browser = playwright.chromium.launch(headless=False, channel="chrome")
-                self.page = browser.new_page()
+            self._init_browser(playwright)
 
             try:
-                # Navigate to Zoom recordings page (where summaries might be)
-                logger.info("Navigating to Zoom recordings")
-                self.page.goto(self.ZOOM_RECORDINGS_URL, wait_until="networkidle")
-
-                # Check authentication
-                if not self._check_authentication(self.page):
-                    logger.error("Not authenticated to Zoom. Please sign in to your browser first.")
+                if not self._navigate_to_recordings():
+                    logger.error("Failed to navigate to recordings page")
                     return []
 
-                # Wait for recordings list to load
-                try:
-                    # This selector may need to be updated based on Zoom's actual page structure
-                    self.page.wait_for_selector('[role="table"], .recording-list', timeout=10000)
-                except PlaywrightTimeoutError:
-                    logger.info("No recordings found or page structure changed")
-                    return []
+                # Try to set date filter
+                self._set_date_filter(since)
 
-                # Extract meeting data
-                # Note: This is a placeholder implementation
-                # Actual implementation would depend on Zoom's page structure
-                meeting_elements = self.page.locator('[role="row"], .recording-item').all()
-                logger.info(f"Found {len(meeting_elements)} recording entries")
+                # Extract recordings from current page
+                recordings = self._extract_recordings_from_page()
 
-                for element in meeting_elements:
-                    try:
-                        meeting_data = self._extract_meeting_data(element)
-                        if meeting_data:
-                            # Filter by date if specified
-                            if since:
-                                meeting_date = meeting_data.get("date")
-                                if meeting_date and meeting_date < since:
-                                    continue
-                            meetings.append(meeting_data)
-                    except Exception as e:
-                        logger.warning(f"Failed to extract meeting data: {e}")
-                        continue
+                # Filter by date if since is specified
+                if since:
+                    recordings = [r for r in recordings if r.get("date", datetime.now()) >= since]
+
+                logger.info(f"Found {len(recordings)} recordings to process")
+
+                # Fetch summaries for each recording
+                for i, recording in enumerate(recordings):
+                    logger.info(f"Processing recording {i+1}/{len(recordings)}: {recording.get('title', 'Unknown')}")
+                    summary = self._fetch_recording_summary(recording)
+                    recording["summary"] = summary
+
+                    # Re-extract recordings list after navigation
+                    # This is needed because navigating away invalidates element references
+                    if i < len(recordings) - 1:
+                        time.sleep(1)  # Small delay to avoid rate limiting
+                        current_recordings = self._extract_recordings_from_page()
+                        # Update element reference for next recording
+                        if i + 1 < len(current_recordings):
+                            recordings[i + 1]["element"] = current_recordings[i + 1].get("element")
+
+                all_recordings = recordings
 
             finally:
                 if self.page:
                     self.page.close()
+                if self.context and not self.browser:
+                    # Persistent context
+                    self.context.close()
+                elif self.browser:
+                    self.browser.close()
 
-        logger.info(f"Fetched {len(meetings)} meetings from Zoom")
-        return meetings
+        logger.info(f"Fetched {len(all_recordings)} recordings from Zoom")
+        return all_recordings
 
-    def _extract_meeting_data(self, element) -> Optional[Dict[str, Any]]:
-        """Extract meeting data from a page element.
-
-        Args:
-            element: Playwright element locator.
-
-        Returns:
-            Meeting data dictionary or None.
-        """
-        try:
-            # This is a placeholder implementation
-            # Actual implementation would depend on Zoom's page structure
-
-            # Extract meeting title/topic
-            title_element = element.locator('[data-test-id="topic"], h3, .topic').first
-            title = title_element.inner_text() if title_element.count() > 0 else "Untitled Meeting"
-
-            # Extract date/time
-            date_element = element.locator('[data-test-id="date"], time, .date').first
-            meeting_date = datetime.now()  # Placeholder
-
-            if date_element.count() > 0:
-                date_text = date_element.inner_text()
-                # Parse date text - actual implementation would need proper date parsing
-                # For now, use current date as placeholder
-                meeting_date = datetime.now()
-
-            # Extract duration if available
-            duration_element = element.locator('[data-test-id="duration"], .duration').first
-            duration = duration_element.inner_text() if duration_element.count() > 0 else None
-
-            # Generate a unique ID based on title and date
-            meeting_id = f"{meeting_date.isoformat()}_{title}"
-
-            # Extract summary if available (Zoom AI Companion summaries)
-            summary = ""
-            summary_element = element.locator('.summary, [data-test-id="summary"]').first
-            if summary_element.count() > 0:
-                summary = summary_element.inner_text()
-
-            return {
-                "id": meeting_id,
-                "title": title,
-                "date": meeting_date,
-                "summary": summary,
-                "participants": [],
-                "duration": duration,
-            }
-
-        except Exception as e:
-            logger.error(f"Error extracting meeting data: {e}")
-            return None
-
-    def process_meeting(
+    def process_recording(
         self,
-        meeting: Dict[str, Any],
+        recording: Dict[str, Any],
         formatter: ObsidianFormatter,
         state_manager: StateManager
     ) -> Optional[Path]:
-        """Process a single meeting.
+        """Process a single recording.
 
         Args:
-            meeting: Meeting data dictionary.
+            recording: Recording data dictionary.
             formatter: Obsidian formatter.
             state_manager: State manager.
 
         Returns:
             Path to created file or None if skipped.
         """
-        meeting_id = meeting.get("id")
-        if not meeting_id:
-            logger.warning("Meeting missing ID, skipping")
+        recording_id = recording.get("id")
+        if not recording_id:
+            logger.warning("Recording missing ID, skipping")
             return None
 
         # Check if already downloaded
-        if state_manager.is_meeting_downloaded(meeting_id, "Zoom"):
-            logger.debug(f"Meeting {meeting_id} already downloaded, skipping")
+        if state_manager.is_meeting_downloaded(recording_id, "Zoom"):
+            logger.debug(f"Recording {recording_id} already downloaded, skipping")
             return None
 
-        # Extract meeting data
-        title = meeting.get("title", "Untitled Meeting")
-        content = meeting.get("summary", "No summary available")
-        participants = meeting.get("participants", [])
-        duration = meeting.get("duration")
-        meeting_date = meeting.get("date", datetime.now())
+        # Extract recording data
+        title = recording.get("title", "Untitled Meeting")
+        summary = recording.get("summary", "No summary available")
+        participants = recording.get("participants", [])
+        duration = recording.get("duration")
+        meeting_date = recording.get("date", datetime.now())
+
+        # Ensure meeting_date is in local timezone
+        if meeting_date.tzinfo is not None:
+            meeting_date = meeting_date.astimezone()
 
         # Prepare tags
         tags = ["meeting", "zoom"]
 
         if self.dry_run:
-            logger.info(f"[DRY RUN] Would save meeting: {title} ({meeting_date})")
+            logger.info(f"[DRY RUN] Would save meeting: {title} ({meeting_date.strftime('%Y-%m-%d %H:%M')})")
+            logger.debug(f"[DRY RUN] Summary preview: {summary[:100]}..." if len(summary) > 100 else f"[DRY RUN] Summary: {summary}")
             return None
 
         # Create the file
@@ -252,7 +1021,7 @@ class ZoomSync:
                 meeting_date=meeting_date,
                 platform="Zoom",
                 title=title,
-                content=content,
+                content=summary,
                 participants=participants,
                 duration=duration,
                 tags=tags
@@ -260,7 +1029,7 @@ class ZoomSync:
 
             # Record in state
             state_manager.record_meeting(
-                meeting_id=meeting_id,
+                meeting_id=recording_id,
                 platform="Zoom",
                 file_path=str(file_path),
                 meeting_title=title,
@@ -271,23 +1040,23 @@ class ZoomSync:
             return file_path
 
         except Exception as e:
-            logger.error(f"Failed to process meeting {meeting_id}: {e}")
+            logger.error(f"Failed to process recording {recording_id}: {e}")
             return None
 
     def sync(self, since: Optional[datetime] = None) -> int:
-        """Sync meetings from Zoom.
+        """Sync recordings from Zoom.
 
         Args:
-            since: Optional datetime to fetch meetings since.
+            since: Optional datetime to fetch recordings since.
 
         Returns:
-            Number of meetings synced.
+            Number of recordings synced.
         """
         if not self.config.is_platform_enabled("zoom"):
             logger.info("Zoom sync is disabled in configuration")
             return 0
 
-        logger.info("Starting Zoom sync")
+        logger.info("Starting Zoom sync (browser automation)")
 
         # Initialize formatter and state manager
         output_path = self.config.get_output_path()
@@ -298,8 +1067,7 @@ class ZoomSync:
             last_sync_time = state_manager.get_last_sync_time("Zoom")
 
             if since is not None:
-                # Explicit --since parameter provided, use it
-                # Use the earlier of the two dates to ensure we don't miss anything
+                # Explicit --since parameter provided
                 if last_sync_time and last_sync_time < since:
                     fetch_since = last_sync_time
                     logger.info(f"Using last sync time {last_sync_time.date()} (earlier than --since {since.date()})")
@@ -307,25 +1075,30 @@ class ZoomSync:
                     fetch_since = since
                     logger.info(f"Using explicit --since date: {since.date()}")
             else:
-                # No --since parameter, use last sync time
+                # No --since parameter, use last sync time or default to 30 days
                 fetch_since = last_sync_time
                 if fetch_since:
                     logger.info(f"Using last sync time: {fetch_since.date()}")
+                else:
+                    fetch_since = datetime.now() - timedelta(days=30)
+                    logger.info(f"No last sync time, defaulting to last 30 days")
 
-            # Fetch meetings
-            meetings = self.fetch_meetings(fetch_since)
+            # Fetch recordings
+            recordings = self.fetch_recordings(fetch_since)
 
-            # Process each meeting
+            # Process each recording
             count = 0
-            for meeting in meetings:
-                if self.process_meeting(meeting, formatter, state_manager):
+            for recording in recordings:
+                # Remove element reference before processing (can't serialize)
+                recording.pop("element", None)
+                if self.process_recording(recording, formatter, state_manager):
                     count += 1
 
             # Update sync time
             if not self.dry_run:
                 state_manager.update_sync_time("Zoom")
 
-        logger.info(f"Zoom sync complete: {count} meetings synced")
+        logger.info(f"Zoom sync complete: {count} recordings synced")
         return count
 
 
@@ -347,7 +1120,7 @@ def main():
     """Main entry point for Zoom sync."""
     parser = argparse.ArgumentParser(description="Sync Zoom meeting summaries")
     parser.add_argument("--config", help="Path to config file")
-    parser.add_argument("--since", help="Fetch meetings since date (ISO format)")
+    parser.add_argument("--since", help="Fetch recordings since date (YYYY-MM-DD)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be downloaded without saving")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
@@ -372,7 +1145,7 @@ def main():
         sync = ZoomSync(config, dry_run=args.dry_run)
         count = sync.sync(since)
 
-        logger.info(f"Sync completed successfully: {count} meetings")
+        logger.info(f"Sync completed successfully: {count} recordings")
         return 0
 
     except Exception as e:
