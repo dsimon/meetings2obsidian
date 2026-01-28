@@ -61,3 +61,8 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+zoom_summaries_page.html
+zoom_summaries_page.png
+zoom_debug_screenshot.png
+zoom_debug_page.png
+zoom_debug_page.html
