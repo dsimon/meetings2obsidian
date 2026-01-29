@@ -55,15 +55,17 @@ class ZoomSync:
         user_data_dir = browser_config.get("user_data_dir")
 
         if user_data_dir:
-            logger.info(f"Using browser profile: {user_data_dir}")
+            # Use existing Chrome profile
+            logger.info(f"Using Chrome profile: {user_data_dir}")
             self.context = playwright.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 headless=False,
-                channel="chrome"
+                channel="chrome",
             )
             self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         else:
-            logger.info("Using default browser context (you may need to sign in)")
+            # Fresh browser - will need manual login
+            logger.info("Launching fresh Chrome browser (you will need to log in)")
             self.browser = playwright.chromium.launch(headless=False, channel="chrome")
             self.context = self.browser.new_context()
             self.page = self.context.new_page()
@@ -225,7 +227,7 @@ class ZoomSync:
             # Try the first URL to trigger login if needed
             first_url = self.ZOOM_SUMMARIES_URLS[0]
             logger.info(f"Navigating to Zoom summaries page: {first_url}")
-            self.page.goto(first_url, wait_until="domcontentloaded", timeout=30000)
+            self.page.goto(first_url, wait_until="networkidle", timeout=30000)
 
             # Wait a bit for any redirects
             time.sleep(2)
@@ -268,7 +270,7 @@ class ZoomSync:
                         logger.warning("Page became invalid, refreshing reference...")
                         self._refresh_page_reference()
 
-                    self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    self.page.goto(url, wait_until="networkidle", timeout=30000)
                     self.page.wait_for_load_state("networkidle", timeout=30000)
 
                     # Check for access restriction or error pages
@@ -770,13 +772,13 @@ class ZoomSync:
             # Click to go to detail page
             link.click()
             self.page.wait_for_load_state("networkidle", timeout=15000)
-            time.sleep(1)  # Small delay for dynamic content
 
-            # Look for AI summary on detail page
-            summary = self._extract_summary_from_detail_page()
+            # Wait for summary content to load - poll for up to 30 seconds
+            summary = self._wait_for_summary_content(max_wait=30)
 
             # Navigate back to list
             self.page.goto(list_url, wait_until="networkidle", timeout=15000)
+            time.sleep(1)  # Brief wait for list to render
 
             return summary
 
@@ -784,16 +786,88 @@ class ZoomSync:
             logger.warning(f"Error fetching summary: {e}")
             return "No summary available"
 
+    def _wait_for_summary_content(self, max_wait: int = 30) -> str:
+        """Wait for summary content to load on the detail page.
+
+        Args:
+            max_wait: Maximum seconds to wait for content.
+
+        Returns:
+            Summary text or "No summary available".
+        """
+        logger.info(f"Waiting up to {max_wait}s for summary content to load...")
+
+        # Content selectors that indicate actual summary text (not just headers)
+        content_indicators = [
+            # Look for paragraph content
+            "p",
+            # Look for list items (action items, key points)
+            "li",
+            # Look for any substantial text content
+            "[class*='content'] p",
+            "[class*='summary'] p",
+            "[class*='body'] p",
+        ]
+
+        start_time = time.time()
+        last_text_length = 0
+
+        while time.time() - start_time < max_wait:
+            # Try to extract summary
+            summary = self._extract_summary_from_detail_page()
+
+            if summary and summary != "No summary available":
+                # Found content!
+                logger.info("Summary content loaded successfully")
+                return summary
+
+            # Check if we're seeing increasing content (still loading)
+            try:
+                body_text = self.page.locator("body").inner_text()
+                current_length = len(body_text)
+
+                # If content is still growing, keep waiting
+                if current_length > last_text_length:
+                    logger.debug(f"Content still loading... ({current_length} chars)")
+                    last_text_length = current_length
+            except Exception:
+                pass
+
+            # Wait a bit before next check
+            time.sleep(2)
+
+        # Final attempt after max wait
+        logger.warning(f"Summary content did not load within {max_wait}s")
+        return self._extract_summary_from_detail_page()
+
     def _extract_summary_from_detail_page(self) -> str:
         """Extract AI summary from the summary detail page.
 
         Returns:
             Summary text or "No summary available".
         """
+        # Save detail page for debugging (only on first call or when debugging)
+        try:
+            detail_url = self.page.url
+            logger.debug(f"Checking for summary content at: {detail_url}")
+            self.page.screenshot(path="zoom_debug_detail_page.png")
+            with open("zoom_debug_detail_page.html", "w") as f:
+                f.write(self.page.content())
+        except Exception as e:
+            logger.debug(f"Could not save debug files: {e}")
+
         # More specific selectors for Zoom's summary detail page
-        # Try to get the actual summary content, not the page wrapper
+        # Based on Zoom's actual UI structure
         summary_selectors = [
-            "[class*='summary-detail'] [class*='content']",  # Summary detail content
+            # Zoom AI Companion summary sections
+            "[class*='summary-content']",
+            "[class*='summaryContent']",
+            "[class*='ai-companion'] [class*='content']",
+            "[class*='aiCompanion'] [class*='content']",
+            "[class*='meeting-recap']",
+            "[class*='meetingRecap']",
+            # Summary detail page specific
+            "[class*='summary-detail'] [class*='content']",
             "[class*='summaryDetail'] [class*='content']",
             "[class*='meeting-summary-content']",
             "[class*='summary-body']",
@@ -805,6 +879,10 @@ class ZoomSync:
             "[class*='recapContent']",
             ".summary-detail__content",
             "[data-testid*='summary-content']",
+            "[data-testid*='summary']",
+            # Try main content areas
+            "main article",
+            "[role='main'] article",
         ]
 
         for selector in summary_selectors:
@@ -812,50 +890,97 @@ class ZoomSync:
                 summary_el = self.page.locator(selector).first
                 if summary_el.count() > 0:
                     text = summary_el.inner_text().strip()
-                    if text and len(text) > 50:  # Ensure it's substantial
+                    cleaned = self._clean_summary_text(text)
+                    # Only accept if it looks like actual summary content
+                    if cleaned and len(cleaned) > 100 and self._looks_like_summary(cleaned):
                         logger.debug(f"Found summary with selector: {selector}")
-                        return self._clean_summary_text(text)
+                        return cleaned
             except Exception:
                 continue
 
-        # Fallback: Look for the main content area but filter out headers
-        fallback_selectors = [
-            "[class*='summary']",
-            "[class*='Summary']",
-            "article",
-            "main [class*='content']",
-        ]
-
-        for selector in fallback_selectors:
-            try:
-                summary_el = self.page.locator(selector).first
-                if summary_el.count() > 0:
-                    text = summary_el.inner_text().strip()
-                    if text and len(text) > 50:
-                        logger.debug(f"Found summary with selector: {selector}")
-                        return self._clean_summary_text(text)
-            except Exception:
-                continue
-
-        # Try to find paragraph elements with substantial text
+        # Try to find divs with substantial paragraph content
         try:
-            paragraphs = self.page.locator("p").all()
-            summary_parts = []
-            for p in paragraphs:
-                text = p.inner_text().strip()
-                # Skip short lines that are likely headers/labels
-                if len(text) > 50 and ("." in text or ":" in text):
-                    summary_parts.append(text)
-            if summary_parts:
-                return "\n\n".join(summary_parts)
+            # Look for containers that have multiple paragraphs of text
+            containers = self.page.locator("div").all()
+            for container in containers:
+                try:
+                    paragraphs = container.locator("p").all()
+                    if len(paragraphs) >= 2:  # Multiple paragraphs suggest actual content
+                        texts = []
+                        for p in paragraphs:
+                            text = p.inner_text().strip()
+                            if text and len(text) > 30:
+                                texts.append(text)
+                        if len(texts) >= 2:
+                            combined = "\n\n".join(texts)
+                            if self._looks_like_summary(combined):
+                                logger.debug("Found summary from paragraph container")
+                                return combined
+                except Exception:
+                    continue
         except Exception:
             pass
 
-        logger.debug("No summary found on detail page")
+        # Last resort: find any substantial text blocks
+        try:
+            all_text = self.page.locator("body").inner_text()
+            cleaned = self._clean_summary_text(all_text)
+            if cleaned and len(cleaned) > 200 and self._looks_like_summary(cleaned):
+                logger.debug("Using cleaned body text as summary")
+                return cleaned
+        except Exception:
+            pass
+
+        logger.warning("No summary found on detail page - check zoom_debug_detail_page.html")
         return "No summary available"
 
+    def _looks_like_summary(self, text: str) -> bool:
+        """Check if text looks like actual meeting summary content.
+
+        Args:
+            text: Text to check.
+
+        Returns:
+            True if text appears to be summary content, False if it's metadata.
+        """
+        # Reject if it's mostly metadata
+        lines = text.strip().split('\n')
+        non_empty_lines = [l.strip() for l in lines if l.strip()]
+
+        if not non_empty_lines:
+            return False
+
+        # Check for signs this is metadata rather than summary
+        metadata_indicators = 0
+        summary_indicators = 0
+
+        for line in non_empty_lines:
+            # Metadata patterns
+            if re.match(r'^ID:\s*[\d\s]+$', line):
+                metadata_indicators += 2
+            elif re.match(r'^\d{1,2}/\d{1,2}/\d{4}', line):
+                metadata_indicators += 1
+            elif re.match(r'^\d{1,2}:\d{2}\s*(AM|PM)?', line, re.I):
+                metadata_indicators += 1
+            elif re.match(r'^(Topic|Host|Duration|Meeting ID):', line, re.I):
+                metadata_indicators += 1
+            elif len(line) < 20 and not any(c in line for c in '.?!'):
+                metadata_indicators += 0.5
+            # Summary patterns - sentences with punctuation
+            elif '.' in line and len(line) > 50:
+                summary_indicators += 1
+            elif any(word in line.lower() for word in ['discussed', 'meeting', 'action items', 'summary', 'participants', 'decided', 'agreed']):
+                summary_indicators += 1
+
+        # If mostly metadata, reject
+        if metadata_indicators > summary_indicators:
+            logger.debug(f"Text looks like metadata (meta={metadata_indicators}, summary={summary_indicators})")
+            return False
+
+        return True
+
     def _clean_summary_text(self, text: str) -> str:
-        """Clean up summary text by removing navigation/header elements.
+        """Clean up summary text by removing navigation/header elements and metadata.
 
         Args:
             text: Raw summary text.
@@ -866,16 +991,37 @@ class ZoomSync:
         lines = text.split('\n')
         cleaned_lines = []
 
-        # Skip common header/navigation text
+        # Skip common header/navigation text and metadata
         skip_patterns = [
             "My Summaries",
             "Shared with me",
             "Trash",
-            "Meeting Summary for",  # We'll include the actual summary, not the title
             "Back to",
             "Share",
             "Delete",
             "Export",
+            "Download",
+            "Copy link",
+            "Sign out",
+            "Settings",
+            "Profile",
+            "Home",
+            "Recordings",
+            "Summaries",
+        ]
+
+        # Patterns that indicate metadata lines to skip
+        metadata_patterns = [
+            r'^ID:\s*[\d\s\-]+$',           # Meeting ID
+            r'^Meeting ID:\s*[\d\s\-]+$',   # Meeting ID
+            r'^\d{3}\s+\d{4}\s+\d{4}$',     # Meeting ID format: 959 4495 0711
+            r'^\d{1,2}/\d{1,2}/\d{4}$',     # Date only
+            r'^\d{1,2}:\d{2}\s*(AM|PM)?$',  # Time only
+            r'^Duration:\s*\d+',             # Duration
+            r'^Host:\s*\S+',                 # Host line
+            r'^Topic:\s*',                   # Topic label
+            r'^\d+\s*min(utes?)?$',          # Duration in minutes
+            r'^Created:',                    # Created timestamp
         ]
 
         in_summary = False
@@ -884,17 +1030,32 @@ class ZoomSync:
             if not line:
                 continue
 
-            # Check if this line should be skipped
+            # Check if this line should be skipped (exact or prefix match)
             skip = False
             for pattern in skip_patterns:
-                if line.startswith(pattern) or line == pattern:
+                if line == pattern or line.startswith(pattern + " "):
                     skip = True
                     break
 
             if skip:
-                # If we see "Meeting Summary for", the actual content follows
-                if "Meeting Summary for" in line:
-                    in_summary = True
+                continue
+
+            # Check metadata patterns
+            for pattern in metadata_patterns:
+                if re.match(pattern, line, re.I):
+                    skip = True
+                    break
+
+            if skip:
+                continue
+
+            # If we see "Meeting Summary for", the actual content follows
+            if "Meeting Summary for" in line:
+                in_summary = True
+                continue
+
+            # Skip very short lines that aren't likely content
+            if len(line) < 10 and not any(c in line for c in '.?!:'):
                 continue
 
             # Include the line if it's substantial content

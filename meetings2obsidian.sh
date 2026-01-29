@@ -12,11 +12,15 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Conda environment name (change this to match your environment)
+CONDA_ENV_NAME="meetings2obsidian"
+
 # Default values
 CONFIG_FILE=""
 SINCE_DATE=""
 DRY_RUN=""
 VERBOSE=""
+CONDA_ACTIVATED_BY_SCRIPT=false
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -105,6 +109,80 @@ COMMON_ARGS=""
 [[ -n "$SINCE_DATE" ]] && COMMON_ARGS="$COMMON_ARGS --since $SINCE_DATE"
 [[ -n "$DRY_RUN" ]] && COMMON_ARGS="$COMMON_ARGS $DRY_RUN"
 [[ -n "$VERBOSE" ]] && COMMON_ARGS="$COMMON_ARGS $VERBOSE"
+
+# Function to deactivate conda if we activated it
+cleanup_conda() {
+    if [[ "$CONDA_ACTIVATED_BY_SCRIPT" == "true" ]]; then
+        print_status "Deactivating conda environment..."
+        conda deactivate 2>/dev/null || true
+    fi
+}
+
+# Set up trap to ensure cleanup on exit
+trap cleanup_conda EXIT
+
+# Activate conda environment if not already active
+activate_conda_env() {
+    # Check if already in the correct environment
+    if [[ "$CONDA_DEFAULT_ENV" == "$CONDA_ENV_NAME" ]]; then
+        print_status "Conda environment '$CONDA_ENV_NAME' already active"
+        return 0
+    fi
+
+    # Find and source conda.sh to enable conda command in script
+    local conda_sh=""
+    local conda_paths=(
+        "$HOME/anaconda3/etc/profile.d/conda.sh"
+        "$HOME/miniconda3/etc/profile.d/conda.sh"
+        "$HOME/miniforge3/etc/profile.d/conda.sh"
+        "$HOME/mambaforge/etc/profile.d/conda.sh"
+        "/opt/anaconda3/etc/profile.d/conda.sh"
+        "/opt/miniconda3/etc/profile.d/conda.sh"
+        "/usr/local/anaconda3/etc/profile.d/conda.sh"
+        "/usr/local/miniconda3/etc/profile.d/conda.sh"
+    )
+
+    # Also check CONDA_EXE if set (works when conda is already initialized)
+    if [[ -n "$CONDA_EXE" ]]; then
+        local conda_base=$(dirname $(dirname "$CONDA_EXE"))
+        conda_paths=("$conda_base/etc/profile.d/conda.sh" "${conda_paths[@]}")
+    fi
+
+    for path in "${conda_paths[@]}"; do
+        if [[ -f "$path" ]]; then
+            conda_sh="$path"
+            break
+        fi
+    done
+
+    if [[ -z "$conda_sh" ]]; then
+        print_warning "Could not find conda.sh - conda may not be installed or not in a standard location"
+        print_warning "Continuing without activating conda environment..."
+        return 1
+    fi
+
+    # Source conda.sh to enable conda command
+    source "$conda_sh"
+
+    # Check if the environment exists
+    if ! conda env list | grep -q "^$CONDA_ENV_NAME "; then
+        print_error "Conda environment '$CONDA_ENV_NAME' does not exist"
+        print_status "Create it with: conda create -n $CONDA_ENV_NAME python=3.12"
+        return 1
+    fi
+
+    # Activate the environment
+    print_status "Activating conda environment '$CONDA_ENV_NAME'..."
+    conda activate "$CONDA_ENV_NAME"
+    CONDA_ACTIVATED_BY_SCRIPT=true
+    print_success "Conda environment activated"
+    return 0
+}
+
+# Activate conda environment
+activate_conda_env || {
+    print_warning "Proceeding without conda environment activation"
+}
 
 # Check if Python is available
 if ! command -v python3 &> /dev/null; then
