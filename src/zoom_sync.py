@@ -2,22 +2,24 @@
 """Zoom meeting summary sync module using browser automation."""
 
 import argparse
+import contextlib
 import logging
 import re
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, ClassVar, Dict, List, Optional
 
-from playwright.sync_api import sync_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.config_loader import ConfigLoader
-from src.utils.state_manager import StateManager
 from src.utils.formatting import ObsidianFormatter
+from src.utils.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ class ZoomSync:
     """Syncs meeting summaries from Zoom using browser automation."""
 
     # URLs to try for finding meeting summaries
-    ZOOM_SUMMARIES_URLS = [
+    ZOOM_SUMMARIES_URLS: ClassVar[List[str]] = [
         "https://zoom.us/user/meeting/summary#/list",  # User-provided URL for meeting summaries
     ]
     ZOOM_LOGIN_URL = "https://zoom.us/signin"
@@ -54,6 +56,10 @@ class ZoomSync:
         browser_config = self.platform_config.get("browser", {})
         user_data_dir = browser_config.get("user_data_dir")
 
+        logger.debug(f"Platform config: {self.platform_config}")
+        logger.debug(f"Browser config: {browser_config}")
+        logger.debug(f"user_data_dir value: {user_data_dir!r}")
+
         if user_data_dir:
             # Use existing Chrome profile
             logger.info(f"Using Chrome profile: {user_data_dir}")
@@ -70,6 +76,26 @@ class ZoomSync:
             self.context = self.browser.new_context()
             self.page = self.context.new_page()
 
+    def _wait_for_page_ready(self, timeout: int = 10000) -> None:
+        """Wait for the page to be reasonably loaded.
+
+        Tries networkidle first with a short timeout. If that times out
+        (common on Zoom's SPA which has constant background requests),
+        falls back to domcontentloaded + a brief sleep.
+
+        Args:
+            timeout: Maximum milliseconds to wait for networkidle before falling back.
+        """
+        try:
+            self.page.wait_for_load_state("networkidle", timeout=timeout)
+        except PlaywrightTimeoutError:
+            # Zoom's SPA often never reaches networkidle due to analytics,
+            # websockets, and polling. Fall back to ensuring DOM is ready.
+            logger.debug(f"networkidle not reached within {timeout}ms, falling back to domcontentloaded")
+            with contextlib.suppress(PlaywrightTimeoutError):
+                self.page.wait_for_load_state("domcontentloaded", timeout=5000)
+            time.sleep(2)
+
     def _check_authentication(self) -> bool:
         """Check if user is authenticated to Zoom.
 
@@ -77,7 +103,7 @@ class ZoomSync:
             True if authenticated, False otherwise.
         """
         try:
-            self.page.wait_for_load_state("networkidle", timeout=15000)
+            self._wait_for_page_ready(timeout=10000)
 
             # Check if we're on the login page
             current_url = self.page.url
@@ -90,7 +116,7 @@ class ZoomSync:
                 "text=/Sign In/i",
                 "text=/Log In/i",
                 "#email",  # Login form email field
-                "[name='email']"
+                "[name='email']",
             ]
 
             for selector in login_indicators:
@@ -142,7 +168,8 @@ class ZoomSync:
             if "zoom.us" in current_url or "zoom.com" in current_url:
                 if "signin" not in current_url and "login" not in current_url:
                     # We're on a Zoom page that's not login
-                    if "recording" in current_url or "meetings" in current_url or "summaries" in current_url or "profile" in current_url:
+                    zoom_pages = ("recording", "meetings", "summaries", "profile")
+                    if any(p in current_url for p in zoom_pages):
                         logger.info("Login successful!")
                         return True
 
@@ -227,10 +254,8 @@ class ZoomSync:
             # Try the first URL to trigger login if needed
             first_url = self.ZOOM_SUMMARIES_URLS[0]
             logger.info(f"Navigating to Zoom summaries page: {first_url}")
-            self.page.goto(first_url, wait_until="networkidle", timeout=30000)
-
-            # Wait a bit for any redirects
-            time.sleep(2)
+            self.page.goto(first_url, wait_until="domcontentloaded", timeout=60000)
+            self._wait_for_page_ready(timeout=10000)
 
             # Check if we need to login
             if not self._check_authentication():
@@ -251,7 +276,7 @@ class ZoomSync:
                 if "summary" in current_url and "zoom.us" in current_url:
                     # Already on summaries page, wait for it to load
                     logger.info("Already on summaries page, waiting for content to load...")
-                    self.page.wait_for_load_state("networkidle", timeout=30000)
+                    self._wait_for_page_ready(timeout=10000)
                     if self._page_has_summaries_content():
                         logger.info(f"Successfully loaded summaries from: {current_url}")
                         return True
@@ -270,8 +295,8 @@ class ZoomSync:
                         logger.warning("Page became invalid, refreshing reference...")
                         self._refresh_page_reference()
 
-                    self.page.goto(url, wait_until="networkidle", timeout=30000)
-                    self.page.wait_for_load_state("networkidle", timeout=30000)
+                    self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    self._wait_for_page_ready(timeout=10000)
 
                     # Check for access restriction or error pages
                     page_content = self.page.content()
@@ -295,7 +320,7 @@ class ZoomSync:
                         logger.debug("Navigation interrupted by redirect, waiting for page to settle...")
                         time.sleep(2)
                         try:
-                            self.page.wait_for_load_state("networkidle", timeout=15000)
+                            self._wait_for_page_ready(timeout=10000)
                             current_url = self.page.url
                             logger.debug(f"Page settled at: {current_url}")
                             if "summary" in current_url and "zoom.us" in current_url:
@@ -307,10 +332,8 @@ class ZoomSync:
                     else:
                         logger.warning(f"Error loading {url}: {e}")
                     # Try refreshing page reference for next attempt
-                    try:
+                    with contextlib.suppress(Exception):
                         self._refresh_page_reference()
-                    except Exception:
-                        pass
                     continue
 
             # If direct URLs don't work, try navigating via sidebar
@@ -336,8 +359,8 @@ class ZoomSync:
         """
         try:
             # First go to main Zoom page
-            self.page.goto("https://zoom.us/profile", wait_until="networkidle", timeout=30000)
-            time.sleep(2)
+            self.page.goto("https://zoom.us/profile", wait_until="domcontentloaded", timeout=60000)
+            self._wait_for_page_ready(timeout=10000)
 
             # Look for Summaries in sidebar (it's a top-level menu item)
             summaries_selectors = [
@@ -353,8 +376,7 @@ class ZoomSync:
                     if link.count() > 0:
                         logger.info(f"Found Summaries link with selector: {selector}")
                         link.click()
-                        self.page.wait_for_load_state("networkidle", timeout=15000)
-                        time.sleep(2)
+                        self._wait_for_page_ready(timeout=10000)
                         break
                 except Exception:
                     continue
@@ -370,10 +392,9 @@ class ZoomSync:
                 try:
                     link = self.page.locator(selector).first
                     if link.count() > 0:
-                        logger.info(f"Found My Summaries link, clicking...")
+                        logger.info("Found My Summaries link, clicking...")
                         link.click()
-                        self.page.wait_for_load_state("networkidle", timeout=15000)
-                        time.sleep(2)
+                        self._wait_for_page_ready(timeout=10000)
 
                         if self._page_has_summaries_content():
                             return True
@@ -381,10 +402,7 @@ class ZoomSync:
                     continue
 
             # Check if we're already on a valid summaries page
-            if self._page_has_summaries_content():
-                return True
-
-            return False
+            return bool(self._page_has_summaries_content())
 
         except Exception as e:
             logger.debug(f"Failed to navigate via sidebar: {e}")
@@ -406,7 +424,7 @@ class ZoomSync:
                 "[class*='summary']",
                 "[class*='Summary']",
                 "text=/no summaries/i",  # Even "no summaries" is valid
-                "text=/no results/i",    # Empty search results
+                "text=/no results/i",  # Empty search results
                 "[aria-label*='summary']",
                 "text=/AI Companion/i",
             ]
@@ -441,8 +459,7 @@ class ZoomSync:
                 if tab.count() > 0:
                     logger.info(f"Trying tab: {tab_selector}")
                     tab.click()
-                    self.page.wait_for_load_state("networkidle", timeout=10000)
-                    time.sleep(2)
+                    self._wait_for_page_ready(timeout=8000)
                     return True
             except Exception as e:
                 logger.debug(f"Could not click tab {tab_selector}: {e}")
@@ -466,7 +483,7 @@ class ZoomSync:
                 "[data-testid='date-filter']",
                 ".date-picker",
                 "[aria-label*='date']",
-                "input[type='date']"
+                "input[type='date']",
             ]
 
             for selector in date_filter_selectors:
@@ -484,7 +501,6 @@ class ZoomSync:
         Returns:
             List of recording dictionaries.
         """
-        recordings = []
 
         try:
             # First check if page shows "no results" or "no summaries"
@@ -527,9 +543,9 @@ class ZoomSync:
             # Zoom uses a table with class zm-table__row for data rows
             list_selectors = [
                 "tr.zm-table__row.normal-row",  # Primary: Zoom's table rows
-                "tr.zm-table__row",             # Fallback: any table row
-                ".zm-table__body tr",           # Table body rows
-                "table tbody tr",               # Generic table rows
+                "tr.zm-table__row",  # Fallback: any table row
+                ".zm-table__body tr",  # Table body rows
+                "table tbody tr",  # Generic table rows
             ]
 
             recording_elements = None
@@ -699,10 +715,10 @@ class ZoomSync:
         formats = [
             "%b %d, %Y %I:%M %p",  # Jan 25, 2024 2:30 PM
             "%B %d, %Y %I:%M %p",  # January 25, 2024 2:30 PM
-            "%m/%d/%Y %I:%M %p",   # 01/25/2024 2:30 PM
-            "%Y-%m-%d %H:%M",      # 2024-01-25 14:30
-            "%b %d, %Y",           # Jan 25, 2024
-            "%m/%d/%Y",            # 01/25/2024
+            "%m/%d/%Y %I:%M %p",  # 01/25/2024 2:30 PM
+            "%Y-%m-%d %H:%M",  # 2024-01-25 14:30
+            "%b %d, %Y",  # Jan 25, 2024
+            "%m/%d/%Y",  # 01/25/2024
         ]
 
         for fmt in formats:
@@ -714,11 +730,11 @@ class ZoomSync:
         # If all formats fail, try to extract just the date part
         try:
             # Look for patterns like "Jan 25, 2024" or "01/25/2024"
-            date_match = re.search(r'(\w+ \d+, \d{4})', text)
+            date_match = re.search(r"(\w+ \d+, \d{4})", text)
             if date_match:
                 return datetime.strptime(date_match.group(1), "%b %d, %Y")
 
-            date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', text)
+            date_match = re.search(r"(\d{1,2}/\d{1,2}/\d{4})", text)
             if date_match:
                 return datetime.strptime(date_match.group(1), "%m/%d/%Y")
         except Exception:
@@ -754,9 +770,9 @@ class ZoomSync:
             link = None
             for sel in link_selectors:
                 try:
-                    l = element.locator(sel).first
-                    if l.count() > 0:
-                        link = l
+                    locator = element.locator(sel).first
+                    if locator.count() > 0:
+                        link = locator
                         logger.debug(f"Found clickable element with selector: {sel}")
                         break
                 except Exception:
@@ -771,14 +787,14 @@ class ZoomSync:
 
             # Click to go to detail page
             link.click()
-            self.page.wait_for_load_state("networkidle", timeout=15000)
+            self._wait_for_page_ready(timeout=15000)
 
-            # Wait for summary content to load - poll for up to 30 seconds
-            summary = self._wait_for_summary_content(max_wait=30)
+            # Wait for summary content to load and stabilize
+            summary = self._wait_for_summary_content(max_wait=60)
 
             # Navigate back to list
-            self.page.goto(list_url, wait_until="networkidle", timeout=15000)
-            time.sleep(1)  # Brief wait for list to render
+            self.page.goto(list_url, wait_until="domcontentloaded", timeout=60000)
+            self._wait_for_page_ready(timeout=10000)
 
             return summary
 
@@ -786,8 +802,12 @@ class ZoomSync:
             logger.warning(f"Error fetching summary: {e}")
             return "No summary available"
 
-    def _wait_for_summary_content(self, max_wait: int = 30) -> str:
+    def _wait_for_summary_content(self, max_wait: int = 60) -> str:
         """Wait for summary content to load on the detail page.
+
+        Zoom renders meeting summaries inside a cross-origin iframe
+        (docs.zoom.us). This method waits for the iframe to appear,
+        then polls its content until it stabilizes (stops changing).
 
         Args:
             max_wait: Maximum seconds to wait for content.
@@ -797,56 +817,126 @@ class ZoomSync:
         """
         logger.info(f"Waiting up to {max_wait}s for summary content to load...")
 
-        # Content selectors that indicate actual summary text (not just headers)
-        content_indicators = [
-            # Look for paragraph content
-            "p",
-            # Look for list items (action items, key points)
-            "li",
-            # Look for any substantial text content
-            "[class*='content'] p",
-            "[class*='summary'] p",
-            "[class*='body'] p",
-        ]
+        # Wait for the ZoomDoc iframe to appear — this is where Zoom renders summaries
+        iframe_selector = "iframe[src*='docs.zoom.us'], iframe[title*='Summary']"
+        try:
+            self.page.wait_for_selector(iframe_selector, timeout=20000, state="attached")
+            logger.debug("ZoomDoc iframe appeared, waiting for content to render...")
+            # Give the iframe time to start loading its document content
+            time.sleep(5)
+        except PlaywrightTimeoutError:
+            logger.warning("ZoomDoc iframe did not appear within 20s, will try parent page")
 
         start_time = time.time()
-        last_text_length = 0
+        last_summary = ""
+        stable_count = 0
+        best_summary = ""
+        best_summary_length = 0
 
         while time.time() - start_time < max_wait:
-            # Try to extract summary
             summary = self._extract_summary_from_detail_page()
 
             if summary and summary != "No summary available":
-                # Found content!
-                logger.info("Summary content loaded successfully")
-                return summary
+                # Track the longest/best summary we've seen
+                if len(summary) > best_summary_length:
+                    best_summary = summary
+                    best_summary_length = len(summary)
 
-            # Check if we're seeing increasing content (still loading)
+                # Check if content has stabilized (same result twice in a row)
+                if summary == last_summary:
+                    stable_count += 1
+                    if stable_count >= 2:
+                        logger.info(
+                            f"Summary content stabilized after {time.time() - start_time:.1f}s ({len(summary)} chars)"
+                        )
+                        return summary
+                else:
+                    # Content changed — iframe is still rendering
+                    logger.debug(
+                        f"Content changed ({len(last_summary)} -> {len(summary)} chars), waiting to stabilize..."
+                    )
+                    stable_count = 0
+                    last_summary = summary
+            else:
+                # No content yet, reset stability tracking
+                stable_count = 0
+                last_summary = ""
+
+            time.sleep(3)
+
+        # Timed out — return the best content we found, if any
+        if best_summary:
+            logger.warning(
+                f"Summary content did not fully stabilize within {max_wait}s, "
+                f"returning best result ({best_summary_length} chars)"
+            )
+            return best_summary
+
+        logger.warning(f"No summary content found within {max_wait}s")
+        return "No summary available"
+
+    def _extract_summary_from_iframe(self) -> Optional[str]:
+        """Extract summary content from the ZoomDoc iframe.
+
+        Zoom renders meeting summaries inside a cross-origin iframe
+        pointing to docs.zoom.us. This method accesses the iframe
+        content using Playwright's frame API.
+
+        Returns:
+            Summary text if found, None otherwise.
+        """
+        try:
+            # Find the docs.zoom.us frame among all page frames
+            frame = None
+            for f in self.page.frames:
+                if "docs.zoom.us" in f.url:
+                    frame = f
+                    break
+
+            if not frame:
+                logger.debug("No docs.zoom.us iframe found")
+                return None
+
+            logger.debug(f"Found ZoomDoc iframe: {frame.url}")
+
+            # Extract text content from the iframe body
             try:
-                body_text = self.page.locator("body").inner_text()
-                current_length = len(body_text)
+                body_text = frame.locator("body").inner_text(timeout=5000)
+            except PlaywrightTimeoutError:
+                logger.debug("Timeout reading iframe body text")
+                return None
 
-                # If content is still growing, keep waiting
-                if current_length > last_text_length:
-                    logger.debug(f"Content still loading... ({current_length} chars)")
-                    last_text_length = current_length
-            except Exception:
-                pass
+            if not body_text or len(body_text.strip()) < 50:
+                logger.debug(f"Iframe body too short ({len(body_text.strip()) if body_text else 0} chars)")
+                return None
 
-            # Wait a bit before next check
-            time.sleep(2)
+            text = body_text.strip()
+            logger.debug(f"Extracted {len(text)} chars from iframe")
 
-        # Final attempt after max wait
-        logger.warning(f"Summary content did not load within {max_wait}s")
-        return self._extract_summary_from_detail_page()
+            # Clean the text — remove any navigation/metadata elements
+            cleaned = self._clean_summary_text(text)
+            if cleaned and len(cleaned) > 100:
+                return cleaned
+
+            # If cleaning was too aggressive, return raw text if it's substantial
+            if len(text) > 100:
+                return text
+
+            return None
+        except Exception as e:
+            logger.debug(f"Error extracting from iframe: {e}")
+            return None
 
     def _extract_summary_from_detail_page(self) -> str:
         """Extract AI summary from the summary detail page.
 
+        Tries iframe extraction first (where Zoom renders summaries),
+        then falls back to parent page selectors.
+
         Returns:
             Summary text or "No summary available".
         """
-        # Save detail page for debugging (only on first call or when debugging)
+        # Save detail page for debugging
         try:
             detail_url = self.page.url
             logger.debug(f"Checking for summary content at: {detail_url}")
@@ -856,33 +946,22 @@ class ZoomSync:
         except Exception as e:
             logger.debug(f"Could not save debug files: {e}")
 
-        # More specific selectors for Zoom's summary detail page
-        # Based on Zoom's actual UI structure
+        # PRIMARY: Extract from ZoomDoc iframe (this is where Zoom puts the summary)
+        iframe_summary = self._extract_summary_from_iframe()
+        if iframe_summary:
+            return iframe_summary
+
+        # FALLBACK: Try parent page selectors (in case Zoom changes their UI)
         summary_selectors = [
-            # Zoom AI Companion summary sections
+            ".summary-web-detail",
             "[class*='summary-content']",
             "[class*='summaryContent']",
-            "[class*='ai-companion'] [class*='content']",
-            "[class*='aiCompanion'] [class*='content']",
             "[class*='meeting-recap']",
             "[class*='meetingRecap']",
-            # Summary detail page specific
+            "[class*='ai-companion'] [class*='content']",
             "[class*='summary-detail'] [class*='content']",
-            "[class*='summaryDetail'] [class*='content']",
-            "[class*='meeting-summary-content']",
-            "[class*='summary-body']",
-            "[class*='summaryBody']",
-            "[class*='summary-text']",
-            "[class*='summaryText']",
-            "[class*='ai-summary-content']",
-            "[class*='recap-content']",
-            "[class*='recapContent']",
-            ".summary-detail__content",
             "[data-testid*='summary-content']",
             "[data-testid*='summary']",
-            # Try main content areas
-            "main article",
-            "[role='main'] article",
         ]
 
         for selector in summary_selectors:
@@ -891,47 +970,13 @@ class ZoomSync:
                 if summary_el.count() > 0:
                     text = summary_el.inner_text().strip()
                     cleaned = self._clean_summary_text(text)
-                    # Only accept if it looks like actual summary content
                     if cleaned and len(cleaned) > 100 and self._looks_like_summary(cleaned):
-                        logger.debug(f"Found summary with selector: {selector}")
+                        logger.debug(f"Found summary with parent page selector: {selector}")
                         return cleaned
             except Exception:
                 continue
 
-        # Try to find divs with substantial paragraph content
-        try:
-            # Look for containers that have multiple paragraphs of text
-            containers = self.page.locator("div").all()
-            for container in containers:
-                try:
-                    paragraphs = container.locator("p").all()
-                    if len(paragraphs) >= 2:  # Multiple paragraphs suggest actual content
-                        texts = []
-                        for p in paragraphs:
-                            text = p.inner_text().strip()
-                            if text and len(text) > 30:
-                                texts.append(text)
-                        if len(texts) >= 2:
-                            combined = "\n\n".join(texts)
-                            if self._looks_like_summary(combined):
-                                logger.debug("Found summary from paragraph container")
-                                return combined
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # Last resort: find any substantial text blocks
-        try:
-            all_text = self.page.locator("body").inner_text()
-            cleaned = self._clean_summary_text(all_text)
-            if cleaned and len(cleaned) > 200 and self._looks_like_summary(cleaned):
-                logger.debug("Using cleaned body text as summary")
-                return cleaned
-        except Exception:
-            pass
-
-        logger.warning("No summary found on detail page - check zoom_debug_detail_page.html")
+        logger.debug("No summary found — check zoom_debug_detail_page.html")
         return "No summary available"
 
     def _looks_like_summary(self, text: str) -> bool:
@@ -943,9 +988,24 @@ class ZoomSync:
         Returns:
             True if text appears to be summary content, False if it's metadata.
         """
+        # Reject known Zoom placeholder/error messages that appear before real content loads
+        placeholder_phrases = [
+            "summary was not generated",
+            "insufficient transcript",
+            "no summary is available",
+            "summary is being generated",
+            "processing your summary",
+            "summary will be available",
+        ]
+        text_lower = text.lower()
+        for phrase in placeholder_phrases:
+            if phrase in text_lower and len(text) < 200:
+                logger.debug(f"Rejected placeholder text: '{text[:80]}...'")
+                return False
+
         # Reject if it's mostly metadata
-        lines = text.strip().split('\n')
-        non_empty_lines = [l.strip() for l in lines if l.strip()]
+        lines = text.strip().split("\n")
+        non_empty_lines = [line.strip() for line in lines if line.strip()]
 
         if not non_empty_lines:
             return False
@@ -956,20 +1016,31 @@ class ZoomSync:
 
         for line in non_empty_lines:
             # Metadata patterns
-            if re.match(r'^ID:\s*[\d\s]+$', line):
+            if re.match(r"^ID:\s*[\d\s]+$", line):
                 metadata_indicators += 2
-            elif re.match(r'^\d{1,2}/\d{1,2}/\d{4}', line):
+            elif re.match(r"^\d{1,2}/\d{1,2}/\d{4}", line):
                 metadata_indicators += 1
-            elif re.match(r'^\d{1,2}:\d{2}\s*(AM|PM)?', line, re.I):
+            elif re.match(r"^\d{1,2}:\d{2}\s*(AM|PM)?", line, re.I):
                 metadata_indicators += 1
-            elif re.match(r'^(Topic|Host|Duration|Meeting ID):', line, re.I):
+            elif re.match(r"^(Topic|Host|Duration|Meeting ID):", line, re.I):
                 metadata_indicators += 1
-            elif len(line) < 20 and not any(c in line for c in '.?!'):
+            elif len(line) < 20 and not any(c in line for c in ".?!"):
                 metadata_indicators += 0.5
             # Summary patterns - sentences with punctuation
-            elif '.' in line and len(line) > 50:
+            elif "." in line and len(line) > 50:
                 summary_indicators += 1
-            elif any(word in line.lower() for word in ['discussed', 'meeting', 'action items', 'summary', 'participants', 'decided', 'agreed']):
+            elif any(
+                word in line.lower()
+                for word in [
+                    "discussed",
+                    "meeting",
+                    "action items",
+                    "summary",
+                    "participants",
+                    "decided",
+                    "agreed",
+                ]
+            ):
                 summary_indicators += 1
 
         # If mostly metadata, reject
@@ -988,7 +1059,7 @@ class ZoomSync:
         Returns:
             Cleaned summary text.
         """
-        lines = text.split('\n')
+        lines = text.split("\n")
         cleaned_lines = []
 
         # Skip common header/navigation text and metadata
@@ -1012,16 +1083,16 @@ class ZoomSync:
 
         # Patterns that indicate metadata lines to skip
         metadata_patterns = [
-            r'^ID:\s*[\d\s\-]+$',           # Meeting ID
-            r'^Meeting ID:\s*[\d\s\-]+$',   # Meeting ID
-            r'^\d{3}\s+\d{4}\s+\d{4}$',     # Meeting ID format: 959 4495 0711
-            r'^\d{1,2}/\d{1,2}/\d{4}$',     # Date only
-            r'^\d{1,2}:\d{2}\s*(AM|PM)?$',  # Time only
-            r'^Duration:\s*\d+',             # Duration
-            r'^Host:\s*\S+',                 # Host line
-            r'^Topic:\s*',                   # Topic label
-            r'^\d+\s*min(utes?)?$',          # Duration in minutes
-            r'^Created:',                    # Created timestamp
+            r"^ID:\s*[\d\s\-]+$",  # Meeting ID
+            r"^Meeting ID:\s*[\d\s\-]+$",  # Meeting ID
+            r"^\d{3}\s+\d{4}\s+\d{4}$",  # Meeting ID format: 959 4495 0711
+            r"^\d{1,2}/\d{1,2}/\d{4}$",  # Date only
+            r"^\d{1,2}:\d{2}\s*(AM|PM)?$",  # Time only
+            r"^Duration:\s*\d+",  # Duration
+            r"^Host:\s*\S+",  # Host line
+            r"^Topic:\s*",  # Topic label
+            r"^\d+\s*min(utes?)?$",  # Duration in minutes
+            r"^Created:",  # Created timestamp
         ]
 
         in_summary = False
@@ -1055,7 +1126,7 @@ class ZoomSync:
                 continue
 
             # Skip very short lines that aren't likely content
-            if len(line) < 10 and not any(c in line for c in '.?!:'):
+            if len(line) < 10 and not any(c in line for c in ".?!:"):
                 continue
 
             # Include the line if it's substantial content
@@ -1063,7 +1134,7 @@ class ZoomSync:
                 cleaned_lines.append(line)
                 in_summary = True
 
-        result = '\n'.join(cleaned_lines)
+        result = "\n".join(cleaned_lines)
 
         # If cleaning removed everything, return original
         if not result or len(result) < 50:
@@ -1104,7 +1175,7 @@ class ZoomSync:
 
                 # Fetch summaries for each recording
                 for i, recording in enumerate(recordings):
-                    logger.info(f"Processing recording {i+1}/{len(recordings)}: {recording.get('title', 'Unknown')}")
+                    logger.info(f"Processing recording {i + 1}/{len(recordings)}: {recording.get('title', 'Unknown')}")
                     summary = self._fetch_recording_summary(recording)
                     recording["summary"] = summary
 
@@ -1132,10 +1203,7 @@ class ZoomSync:
         return all_recordings
 
     def process_recording(
-        self,
-        recording: Dict[str, Any],
-        formatter: ObsidianFormatter,
-        state_manager: StateManager
+        self, recording: Dict[str, Any], formatter: ObsidianFormatter, state_manager: StateManager
     ) -> Optional[Path]:
         """Process a single recording.
 
@@ -1173,7 +1241,8 @@ class ZoomSync:
 
         if self.dry_run:
             logger.info(f"[DRY RUN] Would save meeting: {title} ({meeting_date.strftime('%Y-%m-%d %H:%M')})")
-            logger.debug(f"[DRY RUN] Summary preview: {summary[:100]}..." if len(summary) > 100 else f"[DRY RUN] Summary: {summary}")
+            preview = f"{summary[:100]}..." if len(summary) > 100 else summary
+            logger.debug(f"[DRY RUN] Summary: {preview}")
             return None
 
         # Create the file
@@ -1185,7 +1254,7 @@ class ZoomSync:
                 content=summary,
                 participants=participants,
                 duration=duration,
-                tags=tags
+                tags=tags,
             )
 
             # Record in state
@@ -1194,7 +1263,7 @@ class ZoomSync:
                 platform="Zoom",
                 file_path=str(file_path),
                 meeting_title=title,
-                meeting_date=meeting_date.isoformat()
+                meeting_date=meeting_date.isoformat(),
             )
 
             logger.info(f"Saved meeting: {title}")
@@ -1242,7 +1311,7 @@ class ZoomSync:
                     logger.info(f"Using last sync time: {fetch_since.date()}")
                 else:
                     fetch_since = datetime.now() - timedelta(days=30)
-                    logger.info(f"No last sync time, defaulting to last 30 days")
+                    logger.info("No last sync time, defaulting to last 30 days")
 
             # Fetch recordings
             recordings = self.fetch_recordings(fetch_since)
@@ -1255,8 +1324,10 @@ class ZoomSync:
                 if self.process_recording(recording, formatter, state_manager):
                     count += 1
 
-            # Update sync time
-            if not self.dry_run:
+            # Only update sync time if we actually fetched recordings successfully.
+            # If fetch_recordings returned [] due to a navigation failure, don't
+            # advance the watermark — that would skip meetings from this window.
+            if not self.dry_run and recordings:
                 state_manager.update_sync_time("Zoom")
 
         logger.info(f"Zoom sync complete: {count} recordings synced")
@@ -1271,9 +1342,7 @@ def setup_logging(verbose: bool = False) -> None:
     """
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
 
 
