@@ -954,18 +954,30 @@ class ZoomSync:
 
             logger.debug(f"Extracting from iframe: {frame.url[:120]}")
 
-            # Try HTML extraction + markdown conversion first
+            # Save iframe HTML for debugging
             try:
                 html_content = frame.locator("body").inner_html(timeout=5000)
-                if html_content and len(html_content.strip()) > 50:
-                    markdown = self._convert_html_to_markdown(html_content)
-                    if markdown and len(markdown) > 100:
-                        return markdown
-                    logger.debug(f"HTML-to-markdown produced only {len(markdown) if markdown else 0} chars")
             except PlaywrightTimeoutError:
                 logger.debug("Timeout reading iframe HTML")
+                html_content = None
             except Exception as e:
                 logger.debug(f"Error reading iframe HTML: {e}")
+                html_content = None
+
+            if html_content:
+                try:
+                    with open("zoom_debug_iframe.html", "w") as f:
+                        f.write(html_content)
+                    logger.debug("Saved iframe HTML to zoom_debug_iframe.html")
+                except Exception:
+                    pass
+
+            # Try HTML-to-markdown conversion
+            if html_content and len(html_content.strip()) > 50:
+                markdown = self._convert_html_to_markdown(html_content)
+                if markdown and len(markdown) > 100:
+                    return markdown
+                    logger.debug(f"HTML-to-markdown produced only {len(markdown) if markdown else 0} chars")
 
             # Fallback: plain text extraction
             try:
@@ -990,39 +1002,14 @@ class ZoomSync:
         Returns:
             Cleaned markdown string.
         """
-        # Convert HTML to markdown, stripping non-content elements
+        # Convert HTML to markdown using defaults for broad tag support.
+        # Do NOT pass convert=[] whitelist — ZoomDocs may use non-semantic
+        # HTML (divs with classes) and the whitelist would skip them.
         markdown = html_to_markdown(
             html,
             heading_style="ATX",
             bullets="-",
-            strip=["script", "style", "nav", "footer", "header", "img"],
-            convert=[
-                "h1",
-                "h2",
-                "h3",
-                "h4",
-                "h5",
-                "h6",
-                "p",
-                "ul",
-                "ol",
-                "li",
-                "strong",
-                "b",
-                "em",
-                "i",
-                "a",
-                "br",
-                "blockquote",
-                "pre",
-                "code",
-                "table",
-                "thead",
-                "tbody",
-                "tr",
-                "th",
-                "td",
-            ],
+            strip=["script", "style", "nav", "footer", "header"],
         )
 
         # Clean up the markdown output
