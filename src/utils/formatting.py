@@ -56,7 +56,7 @@ class ObsidianFormatter:
         """
         date_str = meeting_date.strftime("%Y-%m-%d")
         sanitized_title = ObsidianFormatter.sanitize_filename(title)
-        return f"{sanitized_title} - {date_str}.md"
+        return f"{date_str} - {sanitized_title}.md"
 
     @staticmethod
     def create_frontmatter(metadata: Dict[str, Any]) -> str:
