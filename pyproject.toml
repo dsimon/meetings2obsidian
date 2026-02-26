@@ -1,3 +1,9 @@
+[project]
+name = "meetings2obsidian"
+version = "1.0.0"
+description = "Sync AI-generated meeting summaries from Heypocket, Google Meet, and Zoom into Obsidian"
+requires-python = ">=3.12"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
