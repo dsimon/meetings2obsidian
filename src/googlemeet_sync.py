@@ -4,19 +4,19 @@
 import argparse
 import logging
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
-from playwright.sync_api import sync_playwright, Browser, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Browser, Page, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.config_loader import ConfigLoader
-from src.utils.state_manager import StateManager
 from src.utils.formatting import ObsidianFormatter
+from src.utils.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +55,7 @@ class GoogleMeetSync:
         if user_data_dir:
             logger.info(f"Using browser profile: {user_data_dir}")
             browser = playwright.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                headless=False,
-                channel="chrome"
+                user_data_dir=user_data_dir, headless=False, channel="chrome"
             )
         else:
             logger.info("Using default browser context")
@@ -78,11 +76,8 @@ class GoogleMeetSync:
             # Check for sign-in elements
             page.wait_for_load_state("networkidle", timeout=10000)
 
-            # If we see a sign-in button, we're not authenticated
-            if page.locator("text=/Sign in/i").count() > 0:
-                return False
-
-            return True
+            # Not authenticated if sign-in button is visible
+            return not page.locator("text=/Sign in/i").count() > 0
         except PlaywrightTimeoutError:
             logger.warning("Timeout checking authentication")
             return False
@@ -169,13 +164,13 @@ class GoogleMeetSync:
 
             # Extract date/time
             # Note: Actual selector would depend on page structure
-            date_text = element.locator('time, [datetime]').first
+            date_text = element.locator("time, [datetime]").first
             meeting_date = datetime.now()  # Placeholder
 
             if date_text.count() > 0:
                 datetime_attr = date_text.get_attribute("datetime")
                 if datetime_attr:
-                    meeting_date = datetime.fromisoformat(datetime_attr.replace('Z', '+00:00'))
+                    meeting_date = datetime.fromisoformat(datetime_attr.replace("Z", "+00:00"))
 
             # Generate a unique ID based on title and date
             meeting_id = f"{meeting_date.isoformat()}_{title}"
@@ -194,10 +189,7 @@ class GoogleMeetSync:
             return None
 
     def process_meeting(
-        self,
-        meeting: Dict[str, Any],
-        formatter: ObsidianFormatter,
-        state_manager: StateManager
+        self, meeting: Dict[str, Any], formatter: ObsidianFormatter, state_manager: StateManager
     ) -> Optional[Path]:
         """Process a single meeting.
 
@@ -242,7 +234,7 @@ class GoogleMeetSync:
                 content=content,
                 participants=participants,
                 duration=duration,
-                tags=tags
+                tags=tags,
             )
 
             # Record in state
@@ -251,7 +243,7 @@ class GoogleMeetSync:
                 platform="GoogleMeet",
                 file_path=str(file_path),
                 meeting_title=title,
-                meeting_date=meeting_date.isoformat()
+                meeting_date=meeting_date.isoformat(),
             )
 
             logger.info(f"Saved meeting: {title}")
@@ -324,9 +316,7 @@ def setup_logging(verbose: bool = False) -> None:
     """
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
 
 

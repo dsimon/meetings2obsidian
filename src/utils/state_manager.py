@@ -4,7 +4,7 @@ import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +66,7 @@ class StateManager:
             True if meeting has been downloaded, False otherwise.
         """
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT id FROM meetings WHERE meeting_id = ? AND platform = ?",
-            (meeting_id, platform)
-        )
+        cursor.execute("SELECT id FROM meetings WHERE meeting_id = ? AND platform = ?", (meeting_id, platform))
         result = cursor.fetchone()
         return result is not None
 
@@ -99,7 +96,7 @@ class StateManager:
                 INSERT INTO meetings (meeting_id, platform, meeting_title, meeting_date, download_timestamp, file_path)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (meeting_id, platform, meeting_title, meeting_date, download_timestamp, file_path)
+                (meeting_id, platform, meeting_title, meeting_date, download_timestamp, file_path),
             )
             self.conn.commit()
             logger.info(f"Recorded meeting: {meeting_id} ({platform})")
@@ -116,10 +113,7 @@ class StateManager:
             Last sync timestamp or None if never synced.
         """
         cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT last_sync_timestamp FROM sync_state WHERE platform = ?",
-            (platform,)
-        )
+        cursor.execute("SELECT last_sync_timestamp FROM sync_state WHERE platform = ?", (platform,))
         result = cursor.fetchone()
 
         if result:
@@ -142,15 +136,13 @@ class StateManager:
             INSERT OR REPLACE INTO sync_state (platform, last_sync_timestamp)
             VALUES (?, ?)
             """,
-            (platform, timestamp.isoformat())
+            (platform, timestamp.isoformat()),
         )
         self.conn.commit()
         logger.info(f"Updated sync time for {platform}: {timestamp.isoformat()}")
 
     def get_downloaded_meetings(
-        self,
-        platform: Optional[str] = None,
-        limit: Optional[int] = None
+        self, platform: Optional[str] = None, limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """Get list of downloaded meetings.
 
