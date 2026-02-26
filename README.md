@@ -8,9 +8,8 @@ A command-line tool that downloads AI-generated meeting summaries from multiple 
 - **Obsidian-ready formatting**: Automatic markdown formatting with custom YAML frontmatter template
 - **Duplicate prevention**: Tracks downloaded meetings to avoid duplicates
 - **Flexible configuration**: YAML-based configuration with platform-specific settings
-- **API integration**: Direct API access for Heypocket and Zoom
-- **OAuth 2.0 authentication**: Secure token-based authentication for Zoom with automatic refresh
-- **Browser automation**: Uses existing browser sessions for Google Meet (no separate login required)
+- **API integration**: Direct API access for Heypocket
+- **Browser automation**: Persistent browser sessions for Zoom and Google Meet (login persists between runs)
 - **Incremental sync**: Only downloads new meetings since last sync
 - **Timezone conversion**: Automatically converts all timestamps from UTC to local timezone
 - **Custom frontmatter**: Structured metadata with type, date, time, attendees, meeting-type, ai platform tags, and links
@@ -19,9 +18,7 @@ A command-line tool that downloads AI-generated meeting summaries from multiple 
 
 - Python 3.12+
 - macOS or Linux
-- macOS, Linux, or Windows
 - Obsidian vault
-- Active accounts on the platforms you want to sync
 
 ## Installation
 
@@ -97,24 +94,21 @@ platforms:
 
 Set to `null` to use a fresh browser session (you'll need to log in each time).
 
-#### Zoom (API-based with OAuth 2.0)
+#### Zoom (Browser automation)
 
 ```yaml
 platforms:
   zoom:
     enabled: true
-    client_id: YOUR_ZOOM_CLIENT_ID_HERE
-    client_secret: YOUR_ZOOM_CLIENT_SECRET_HERE
-    redirect_uri: http://localhost:8080/oauth/callback
+    browser:
+      # Optional: defaults to ~/.meetings2obsidian/chrome_profile/
+      # which persists your Zoom session between runs.
+      user_data_dir: null
 ```
 
-Zoom meeting summaries are accessed through the Cloud Recordings API using OAuth 2.0 authentication.
+Zoom uses browser automation to extract AI-generated meeting summaries. On first run, you'll need to log into Zoom in the browser window that opens. Your session is saved to a persistent profile so you won't need to log in again.
 
-**Setup instructions:**
-1. See [ZOOM_SETUP.md](ZOOM_SETUP.md) for detailed instructions on creating a Zoom OAuth app
-2. Add your Client ID and Client Secret to `config.yaml`
-3. On first run, a browser window will open for you to authorize the app
-4. Tokens are stored locally in `zoom_tokens.json` (automatically refreshed)
+See [ZOOM_SETUP.md](ZOOM_SETUP.md) for detailed setup instructions.
 
 ## Usage
 
@@ -128,13 +122,13 @@ Zoom meeting summaries are accessed through the Cloud Recordings API using OAuth
 
 ```bash
 # Heypocket only
-python src/heypocket_sync.py
+.venv/bin/python src/heypocket_sync.py
 
 # Google Meet only
-python src/googlemeet_sync.py
+.venv/bin/python src/googlemeet_sync.py
 
 # Zoom only
-python src/zoom_sync.py
+.venv/bin/python src/zoom_sync.py
 ```
 
 ### Command-line options
@@ -161,7 +155,7 @@ python src/zoom_sync.py
 All modules support the same command-line options:
 
 ```bash
-python src/heypocket_sync.py --config config.yaml --since 2024-01-01 --dry-run --verbose
+.venv/bin/python src/heypocket_sync.py --config config.yaml --since 2024-01-01 --dry-run --verbose
 ```
 
 ## Output Format
@@ -234,21 +228,24 @@ tags:
 ```text
 meetings2obsidian/
 ├── README.md
+├── AGENTS.md                      # Agent instructions for AI assistants
+├── ZOOM_SETUP.md                  # Zoom browser automation setup guide
+├── pyproject.toml                 # Ruff linter/formatter config
 ├── requirements.txt
 ├── config.example.yaml
 ├── config.yaml                    # Your configuration (not in git)
 ├── meetings_state.db              # State database (auto-created)
-├── meetings2obsidian.sh           # Main wrapper script
+├── meetings2obsidian.sh           # Main wrapper script (auto-bootstraps .venv)
 ├── src/
 │   ├── __init__.py
-│   ├── heypocket_sync.py         # Heypocket sync module
-│   ├── googlemeet_sync.py        # Google Meet sync module
-│   ├── zoom_sync.py              # Zoom sync module
+│   ├── heypocket_sync.py         # Heypocket API sync module
+│   ├── googlemeet_sync.py        # Google Meet browser sync module
+│   ├── zoom_sync.py              # Zoom browser sync module
 │   └── utils/
 │       ├── __init__.py
 │       ├── formatting.py         # Markdown formatting utilities
-│       ├── state_manager.py      # Track downloaded meetings
-│       └── config_loader.py      # Configuration management
+│       ├── state_manager.py      # SQLite state tracking
+│       └── config_loader.py      # YAML configuration management
 └── tests/
     └── ...
 ```
@@ -271,19 +268,19 @@ Make sure you've created `config.yaml` from the example:
 cp config.example.yaml config.yaml
 ```
 
-### Browser automation not working (Google Meet only)
+### Browser automation not working (Zoom / Google Meet)
 
 1. Ensure you're signed in to Google in your Chrome browser
 2. Check that the `user_data_dir` path in config.yaml is correct
 3. Try setting `user_data_dir: null` to use a fresh browser session
 4. Make sure Playwright is installed: `playwright install chromium`
 
-### Zoom OAuth errors
+### Zoom browser automation issues
 
-1. **"Invalid Client" error**: Verify Client ID and Client Secret are correct in `config.yaml`
-2. **"Invalid Scope" error**: Make sure you've added the required scopes (`recording:read:admin` or `cloud_recording:read:list_user_recordings:admin`) to your Zoom app
-3. **Token expired**: The tool automatically refreshes tokens. If refresh fails, delete `zoom_tokens.json` and re-authenticate
-4. **No recordings found**: Ensure Cloud Recording is enabled in your Zoom account and AI Companion is generating summaries
+1. On first run, log into Zoom in the browser window that opens
+2. If your login session expires, delete `~/.meetings2obsidian/chrome_profile/` and re-run
+3. If summaries aren't captured, try `--verbose` to see debug output
+4. Ensure Zoom AI Companion is enabled in your Zoom account settings
 
 ### Heypocket API errors
 
@@ -316,6 +313,13 @@ cp config.example.yaml config.yaml
 pytest tests/
 ```
 
+### Linting & Formatting
+
+```bash
+ruff check src/               # Lint
+ruff format --check src/       # Check formatting
+```
+
 ### Adding a new platform
 
 1. Create a new module in `src/` (e.g., `teams_sync.py`)
@@ -325,11 +329,10 @@ pytest tests/
 
 ## Limitations
 
-- Browser automation (Google Meet) depends on the current page structure, which may change
-- API access requires valid credentials (API key for Heypocket, OAuth app for Zoom)
-- Zoom Cloud Recordings API can only fetch recordings within 1-month ranges (automatically handled)
+- Browser automation (Zoom, Google Meet) depends on current page structure, which may change
+- Heypocket requires a valid API key
+- Meeting summaries are only available if the platform's AI feature generates them
 - Rate limits may apply depending on the platform
-- Meeting summaries are only available if the platform generates them
 
 ## Future Enhancements
 
