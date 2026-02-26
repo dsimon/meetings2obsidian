@@ -12,15 +12,18 @@ platforms:
     enabled: true
     api_key: YOUR_HEYPOCKET_API_KEY_HERE  # Get from Heypocket dashboard
 
-  # Google Meet - Browser automation
+  # Google Meet - Browser automation (discovers Gemini meeting notes from Google Drive)
   googlemeet:
     enabled: true
     browser:
-      # Optional: Path to Chrome user data directory for persistent login
-      # macOS example: /Users/username/Library/Application Support/Google/Chrome/Default
-      # Linux example: /home/username/.config/google-chrome/Default
-      # Windows example: C:\Users\username\AppData\Local\Google\Chrome\User Data\Default
-      user_data_dir: null  # Set to null to use default browser
+      # Optional: Path to Chrome user data directory for persistent login.
+      # If null, defaults to ~/.meetings2obsidian/chrome_profile/ which
+      # persists your Google session between runs (no re-login needed).
+      # This profile is shared with Zoom (they run sequentially).
+      # Set to a Chrome profile path to reuse an existing login session:
+      #   macOS: /Users/username/Library/Application Support/Google/Chrome/Default
+      #   Linux: /home/username/.config/google-chrome/Default
+      user_data_dir: null
 
   # Zoom - Browser automation (no OAuth app required)
   zoom:
