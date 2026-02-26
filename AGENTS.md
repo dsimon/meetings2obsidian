@@ -2,13 +2,17 @@
 
 ## Project Overview
 
-Python CLI tool that syncs AI-generated meeting summaries from Heypocket (API), Google Meet (browser automation), and Zoom (browser automation) into an Obsidian vault as formatted markdown with YAML frontmatter. Uses Conda (not virtualenv), SQLite for state, and a Bash wrapper script.
+Python CLI tool that syncs AI-generated meeting summaries from Heypocket (API), Google Meet (browser automation), and Zoom (browser automation) into an Obsidian vault as formatted markdown with YAML frontmatter. Uses a self-bootstrapping venv, SQLite for state, and a Bash wrapper script.
 
 ## Build & Run Commands
 
 ```bash
-# Environment setup
-conda activate meetings2obsidian        # Python 3.12 environment
+# First run (auto-creates .venv, installs deps, downloads Chromium)
+./meetings2obsidian.sh --verbose
+
+# Or set up manually
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt         # pyyaml, requests, playwright
 playwright install chromium             # Required for browser automation
 
@@ -16,9 +20,9 @@ playwright install chromium             # Required for browser automation
 ./meetings2obsidian.sh --verbose
 
 # Run individual modules
-python src/heypocket_sync.py --verbose --dry-run --since 2024-01-01
-python src/zoom_sync.py --verbose --dry-run
-python src/googlemeet_sync.py --verbose
+.venv/bin/python src/heypocket_sync.py --verbose --dry-run --since 2024-01-01
+.venv/bin/python src/zoom_sync.py --verbose --dry-run
+.venv/bin/python src/googlemeet_sync.py --verbose
 
 # CLI flags (all modules and wrapper share the same interface)
 #   --config PATH     Path to config.yaml
