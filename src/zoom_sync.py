@@ -44,12 +44,19 @@ class ZoomSync:
         self.config = config
         self.dry_run = dry_run
         self.platform_config = config.get_platform_config("zoom")
-        self.browser = None
+        self.context = None
         self.context = None
         self.page: Optional[Page] = None
 
     def _init_browser(self, playwright) -> None:
-        """Initialize browser with existing profile.
+        """Initialize browser with a persistent profile.
+
+        Always uses launch_persistent_context() so that cookies, session
+        state, and cache persist between runs. This keeps the user logged
+        into Zoom and significantly speeds up page loads.
+
+        If user_data_dir is not set in config, defaults to
+        ~/.meetings2obsidian/chrome_profile/.
 
         Args:
             playwright: Playwright instance.
@@ -57,25 +64,21 @@ class ZoomSync:
         browser_config = self.platform_config.get("browser", {})
         user_data_dir = browser_config.get("user_data_dir")
 
-        logger.debug(f"Platform config: {self.platform_config}")
-        logger.debug(f"Browser config: {browser_config}")
-        logger.debug(f"user_data_dir value: {user_data_dir!r}")
-
-        if user_data_dir:
-            # Use existing Chrome profile
-            logger.info(f"Using Chrome profile: {user_data_dir}")
-            self.context = playwright.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                headless=False,
-                channel="chrome",
-            )
-            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+        if not user_data_dir:
+            # Default to a dedicated profile directory so sessions persist
+            default_profile = Path.home() / ".meetings2obsidian" / "chrome_profile"
+            default_profile.mkdir(parents=True, exist_ok=True)
+            user_data_dir = str(default_profile)
+            logger.info(f"Using default persistent profile: {user_data_dir}")
         else:
-            # Fresh browser - will need manual login
-            logger.info("Launching fresh Chrome browser (you will need to log in)")
-            self.browser = playwright.chromium.launch(headless=False, channel="chrome")
-            self.context = self.browser.new_context()
-            self.page = self.context.new_page()
+            logger.info(f"Using configured Chrome profile: {user_data_dir}")
+
+        self.context = playwright.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            headless=False,
+            channel="chrome",
+        )
+        self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
     def _wait_for_page_ready(self, timeout: int = 10000) -> None:
         """Wait for the page to be reasonably loaded.
@@ -1261,11 +1264,8 @@ class ZoomSync:
             finally:
                 if self.page:
                     self.page.close()
-                if self.context and not self.browser:
-                    # Persistent context
+                if self.context:
                     self.context.close()
-                elif self.browser:
-                    self.browser.close()
 
         logger.info(f"Fetched {len(all_recordings)} recordings from Zoom")
         return all_recordings

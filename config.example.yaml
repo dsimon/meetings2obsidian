@@ -26,12 +26,13 @@ platforms:
   zoom:
     enabled: true
     browser:
-      # Optional: Path to Chrome user data directory for persistent login
-      # This allows the script to use your existing Zoom login session
-      # macOS example: /Users/username/Library/Application Support/Google/Chrome/Default
-      # Linux example: /home/username/.config/google-chrome/Default
-      # Windows example: C:\Users\username\AppData\Local\Google\Chrome\User Data\Default
-      user_data_dir: null  # Set to null to use default browser (will prompt for login)
+      # Optional: Path to Chrome user data directory for persistent login.
+      # If null, defaults to ~/.meetings2obsidian/chrome_profile/ which
+      # persists your Zoom session between runs (no re-login needed).
+      # Set to a Chrome profile path to reuse an existing login session:
+      #   macOS: /Users/username/Library/Application Support/Google/Chrome/Default
+      #   Linux: /home/username/.config/google-chrome/Default
+      user_data_dir: null
 
 # Date filters (optional)
 # Uncomment to only fetch meetings within a date range
