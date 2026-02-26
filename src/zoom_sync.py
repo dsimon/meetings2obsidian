@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional
 
+from markdownify import markdownify as html_to_markdown
 from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -43,12 +44,19 @@ class ZoomSync:
         self.config = config
         self.dry_run = dry_run
         self.platform_config = config.get_platform_config("zoom")
-        self.browser = None
+        self.context = None
         self.context = None
         self.page: Optional[Page] = None
 
     def _init_browser(self, playwright) -> None:
-        """Initialize browser with existing profile.
+        """Initialize browser with a persistent profile.
+
+        Always uses launch_persistent_context() so that cookies, session
+        state, and cache persist between runs. This keeps the user logged
+        into Zoom and significantly speeds up page loads.
+
+        If user_data_dir is not set in config, defaults to
+        ~/.meetings2obsidian/chrome_profile/.
 
         Args:
             playwright: Playwright instance.
@@ -56,25 +64,21 @@ class ZoomSync:
         browser_config = self.platform_config.get("browser", {})
         user_data_dir = browser_config.get("user_data_dir")
 
-        logger.debug(f"Platform config: {self.platform_config}")
-        logger.debug(f"Browser config: {browser_config}")
-        logger.debug(f"user_data_dir value: {user_data_dir!r}")
-
-        if user_data_dir:
-            # Use existing Chrome profile
-            logger.info(f"Using Chrome profile: {user_data_dir}")
-            self.context = playwright.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                headless=False,
-                channel="chrome",
-            )
-            self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+        if not user_data_dir:
+            # Default to a dedicated profile directory so sessions persist
+            default_profile = Path.home() / ".meetings2obsidian" / "chrome_profile"
+            default_profile.mkdir(parents=True, exist_ok=True)
+            user_data_dir = str(default_profile)
+            logger.info(f"Using default persistent profile: {user_data_dir}")
         else:
-            # Fresh browser - will need manual login
-            logger.info("Launching fresh Chrome browser (you will need to log in)")
-            self.browser = playwright.chromium.launch(headless=False, channel="chrome")
-            self.context = self.browser.new_context()
-            self.page = self.context.new_page()
+            logger.info(f"Using configured Chrome profile: {user_data_dir}")
+
+        self.context = playwright.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            headless=False,
+            channel="chrome",
+        )
+        self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
 
     def _wait_for_page_ready(self, timeout: int = 10000) -> None:
         """Wait for the page to be reasonably loaded.
@@ -805,9 +809,9 @@ class ZoomSync:
     def _wait_for_summary_content(self, max_wait: int = 60) -> str:
         """Wait for summary content to load on the detail page.
 
-        Zoom renders meeting summaries inside a cross-origin iframe
-        (docs.zoom.us). This method waits for the iframe to appear,
-        then polls its content until it stabilizes (stops changing).
+        Zoom renders meeting summaries inside a cross-origin iframe.
+        This method waits for the iframe to appear, then polls its
+        content until it stabilizes (stops changing).
 
         Args:
             max_wait: Maximum seconds to wait for content.
@@ -817,15 +821,34 @@ class ZoomSync:
         """
         logger.info(f"Waiting up to {max_wait}s for summary content to load...")
 
-        # Wait for the ZoomDoc iframe to appear — this is where Zoom renders summaries
-        iframe_selector = "iframe[src*='docs.zoom.us'], iframe[title*='Summary']"
+        # Save debug files ONCE at the start (not per-poll)
+        try:
+            self.page.screenshot(path="zoom_debug_detail_page.png")
+            with open("zoom_debug_detail_page.html", "w") as f:
+                f.write(self.page.content())
+        except Exception:
+            pass
+
+        # Wait for ANY iframe to appear on the detail page
+        iframe_selector = "iframe[src*='docs.zoom.us'], iframe[title*='Summary'], iframe[src*='zoom.us/doc']"
         try:
             self.page.wait_for_selector(iframe_selector, timeout=20000, state="attached")
-            logger.debug("ZoomDoc iframe appeared, waiting for content to render...")
-            # Give the iframe time to start loading its document content
+            logger.info("Summary iframe appeared, waiting for content to render...")
             time.sleep(5)
         except PlaywrightTimeoutError:
-            logger.warning("ZoomDoc iframe did not appear within 20s, will try parent page")
+            # Log what iframes DO exist to aid debugging
+            try:
+                iframes = self.page.locator("iframe").all()
+                if iframes:
+                    for iframe in iframes:
+                        src = iframe.get_attribute("src") or "(no src)"
+                        title = iframe.get_attribute("title") or "(no title)"
+                        logger.info(f"  Found iframe: src={src[:100]}, title={title}")
+                else:
+                    logger.info("  No iframes found on page at all")
+            except Exception:
+                pass
+            logger.warning("Expected summary iframe did not appear within 20s")
 
         start_time = time.time()
         last_summary = ""
@@ -876,56 +899,260 @@ class ZoomSync:
         return "No summary available"
 
     def _extract_summary_from_iframe(self) -> Optional[str]:
-        """Extract summary content from the ZoomDoc iframe.
+        """Extract summary content from an iframe on the detail page.
 
         Zoom renders meeting summaries inside a cross-origin iframe
-        pointing to docs.zoom.us. This method accesses the iframe
-        content using Playwright's frame API.
+        (typically docs.zoom.us). This method finds the iframe, extracts
+        its HTML content, and converts it to formatted markdown.
 
         Returns:
-            Summary text if found, None otherwise.
+            Markdown-formatted summary text if found, None otherwise.
         """
         try:
-            # Find the docs.zoom.us frame among all page frames
-            frame = None
+            # Collect all non-main-page frames
+            main_url = self.page.url
+            candidate_frames = []
             for f in self.page.frames:
-                if "docs.zoom.us" in f.url:
-                    frame = f
+                if f.url and f.url != main_url and f.url != "about:blank":
+                    candidate_frames.append(f)
+
+            if not candidate_frames:
+                logger.debug("No child frames found on page")
+                return None
+
+            # Try to find the summary frame by URL pattern (preferred)
+            frame = None
+            zoom_patterns = ["docs.zoom.us", "zoom.us/doc", "zoomdocs"]
+            for f in candidate_frames:
+                for pattern in zoom_patterns:
+                    if pattern in f.url:
+                        frame = f
+                        break
+                if frame:
                     break
 
+            # If no Zoom doc frame found, try the largest non-utility iframe
             if not frame:
-                logger.debug("No docs.zoom.us iframe found")
+                logger.info(
+                    f"No Zoom doc iframe found among {len(candidate_frames)} frame(s). Trying largest content frame..."
+                )
+                for f in candidate_frames:
+                    logger.info(f"  Frame URL: {f.url[:120]}")
+                # Use the first non-trivial frame (skip analytics/tracking iframes)
+                for f in candidate_frames:
+                    try:
+                        text = f.locator("body").inner_text(timeout=3000)
+                        if text and len(text.strip()) > 100:
+                            frame = f
+                            logger.info(f"  Using frame with {len(text.strip())} chars of text")
+                            break
+                    except Exception:
+                        continue
+
+            if not frame:
                 return None
 
-            logger.debug(f"Found ZoomDoc iframe: {frame.url}")
+            logger.debug(f"Extracting from iframe: {frame.url[:120]}")
 
-            # Extract text content from the iframe body
+            # Save iframe HTML for debugging
+            try:
+                html_content = frame.locator("body").inner_html(timeout=5000)
+            except PlaywrightTimeoutError:
+                logger.debug("Timeout reading iframe HTML")
+                html_content = None
+            except Exception as e:
+                logger.debug(f"Error reading iframe HTML: {e}")
+                html_content = None
+
+            if html_content:
+                try:
+                    with open("zoom_debug_iframe.html", "w") as f:
+                        f.write(html_content)
+                    logger.debug("Saved iframe HTML to zoom_debug_iframe.html")
+                except Exception:
+                    pass
+
+            # Try HTML-to-markdown conversion
+            if html_content and len(html_content.strip()) > 50:
+                markdown = self._convert_html_to_markdown(html_content)
+                if markdown and len(markdown) > 100:
+                    return markdown
+                    logger.debug(f"HTML-to-markdown produced only {len(markdown) if markdown else 0} chars")
+
+            # Fallback: plain text extraction
             try:
                 body_text = frame.locator("body").inner_text(timeout=5000)
+                if body_text and len(body_text.strip()) > 100:
+                    logger.debug("Using plain text extraction from iframe")
+                    return body_text.strip()
             except PlaywrightTimeoutError:
-                logger.debug("Timeout reading iframe body text")
-                return None
-
-            if not body_text or len(body_text.strip()) < 50:
-                logger.debug(f"Iframe body too short ({len(body_text.strip()) if body_text else 0} chars)")
-                return None
-
-            text = body_text.strip()
-            logger.debug(f"Extracted {len(text)} chars from iframe")
-
-            # Clean the text — remove any navigation/metadata elements
-            cleaned = self._clean_summary_text(text)
-            if cleaned and len(cleaned) > 100:
-                return cleaned
-
-            # If cleaning was too aggressive, return raw text if it's substantial
-            if len(text) > 100:
-                return text
+                logger.debug("Timeout reading iframe text")
 
             return None
         except Exception as e:
-            logger.debug(f"Error extracting from iframe: {e}")
+            logger.warning(f"Error extracting from iframe: {e}")
             return None
+
+    def _preprocess_zoom_html(self, html: str) -> str:
+        """Preprocess ZoomDocs HTML into standard semantic HTML before markdown conversion.
+
+        ZoomDocs uses a non-standard HTML structure (React/Slate-based editor) that
+        markdownify cannot handle correctly. This method normalizes the HTML:
+          - Unwraps <p> tags nested inside <h2>/<h3> (which break heading conversion)
+          - Converts <div class="zm-bulleted-list-block"> to <ul><li> lists
+          - Converts <div class="zm-paragraph-block"> to <p> tags
+          - Removes decorative bullet symbol containers (blot-slots)
+          - Removes zero-width spaces and byte-order marks
+          - Strips Zoom task link icons (SVG elements inside links)
+
+        Args:
+            html: Raw HTML from the ZoomDoc iframe.
+
+        Returns:
+            Preprocessed HTML with standard semantic structure.
+        """
+        # Remove script and style tags entirely (markdownify's strip only removes
+        # the tags but keeps inner text content, which leaks JS/CSS into output)
+        html = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+        html = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL)
+
+        # Remove zero-width spaces (&#8203; / \u200b) and byte-order marks (\ufeff)
+        html = html.replace("\u200b", "").replace("\ufeff", "")
+        html = re.sub(r"&#8203;", "", html)
+
+        # Remove blot-slots containers (decorative bullet symbols)
+        html = re.sub(r'<div class="blot-slots"[^>]*>.*?</div>\s*</div>', "", html, flags=re.DOTALL)
+
+        # Remove SVG icons inside links (task link icons)
+        html = re.sub(r"<svg[^>]*>.*?</svg>", "", html, flags=re.DOTALL)
+
+        # Remove zm-page-link-icon spans (wrappers around task SVGs)
+        html = re.sub(r'<span class="zm-page-link-icon"[^>]*>\s*</span>', "", html, flags=re.DOTALL)
+
+        # Unwrap <p class="zm-block-content"> inside <h2>/<h3> — replace <p> with <span>
+        # so markdownify sees <h2><span>text</span></h2> instead of <h2><p>text</p></h2>
+        html = re.sub(
+            r'(<h[23][^>]*>)\s*<p class="zm-block-content">(.*?)</p>\s*(</h[23]>)',
+            r"\1\2\3",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Convert zm-bulleted-list-block divs to <li> tags.
+        # Extract the content from the inner <p class="zm-block-content">.
+        html = re.sub(
+            r'<div class="zm-bulleted-list-block"[^>]*>\s*<p class="zm-block-content">(.*?)</p>\s*</div>',
+            r"<li>\1</li>",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Wrap consecutive <li> groups in <ul> tags
+        html = re.sub(
+            r"((?:<li>.*?</li>\s*)+)",
+            r"<ul>\1</ul>",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Convert zm-paragraph-block divs to <p> tags.
+        # Extract the content from the inner <p class="zm-block-content">.
+        html = re.sub(
+            r'<div class="zm-paragraph-block"[^>]*>\s*<p class="zm-block-content">(.*?)</p>\s*</div>',
+            r"<p>\1</p>",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Extract link text from zm-link structures.
+        # Pattern: <a class="zm-link" ...>
+        #   <span class="zm-link-inner"><span class="zm-link-text">TEXT</span></span>
+        # </a>
+        # Replace with just the text content (these are Zoom task links, not useful URLs).
+        html = re.sub(
+            r'<a class="zm-link"[^>]*>[^<]*<span[^>]*class="zm-link-inner"[^>]*>'
+            r'\s*<span class="zm-link-text[^"]*">([^<]+)</span>\s*</span>\s*</a>',
+            r"\1",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Remove empty text-segment spans (often just held zero-width spaces, now empty)
+        html = re.sub(r'<span class="text-segment">\s*</span>', "", html, flags=re.DOTALL)
+
+        # Remove data attributes and Zoom-specific attributes to reduce noise
+        html = re.sub(
+            r"\s+(?:data-block-id|data-block-type|zm-author"
+            r'|data-correction|id="aria-id)[^"]*"[^"]*"',
+            "",
+            html,
+        )
+
+        # Remove contenteditable attributes
+        html = re.sub(r'\s+contenteditable="[^"]*"', "", html)
+
+        # Remove the template header and docs container wrapper divs
+        html = re.sub(
+            r'<div class="docs-web-summary-container-header"[^>]*>.*?'
+            r"</div>\s*</div>\s*</div>",
+            "",
+            html,
+            flags=re.DOTALL,
+        )
+
+        logger.debug(f"Preprocessed ZoomDocs HTML ({len(html)} chars)")
+        return html
+
+    def _convert_html_to_markdown(self, html: str) -> str:
+        """Convert HTML content from Zoom's summary iframe to clean markdown.
+
+        Args:
+            html: Raw HTML content from the ZoomDoc iframe.
+
+        Returns:
+            Cleaned markdown string.
+        """
+        # Preprocess ZoomDocs HTML to normalize non-standard structure
+        html = self._preprocess_zoom_html(html)
+
+        # Convert preprocessed HTML to markdown
+        markdown = html_to_markdown(
+            html,
+            heading_style="ATX",
+            bullets="-",
+            strip=["script", "style", "nav", "footer", "header"],
+        )
+
+        # Clean up the markdown output
+        lines = markdown.split("\n")
+        cleaned_lines = []
+        for line in lines:
+            # Strip trailing whitespace but preserve leading (indentation for lists)
+            line = line.rstrip()
+            cleaned_lines.append(line)
+
+        result = "\n".join(cleaned_lines)
+
+        # Collapse excessive blank lines (more than 2 consecutive)
+        result = re.sub(r"\n{3,}", "\n\n", result)
+
+        # Remove Zoom UI noise that leaks from the editor container
+        result = re.sub(r"(?m)^Template:.*$\n?", "", result)
+        result = re.sub(r"(?m)^General template.*$\n?", "", result)
+        result = re.sub(r"AI can make mistakes\..*$", "", result, flags=re.MULTILINE)
+        result = re.sub(r"(?m)^NEWMeeting summary templates.*$\n?", "", result)
+        result = re.sub(
+            r"You can now regenerate your meeting summary.*$",
+            "",
+            result,
+            flags=re.MULTILINE,
+        )
+
+        # Remove any leading/trailing whitespace
+        result = result.strip()
+
+        logger.debug(f"Converted HTML to {len(result)} chars of markdown")
+        return result
 
     def _extract_summary_from_detail_page(self) -> str:
         """Extract AI summary from the summary detail page.
@@ -936,16 +1163,6 @@ class ZoomSync:
         Returns:
             Summary text or "No summary available".
         """
-        # Save detail page for debugging
-        try:
-            detail_url = self.page.url
-            logger.debug(f"Checking for summary content at: {detail_url}")
-            self.page.screenshot(path="zoom_debug_detail_page.png")
-            with open("zoom_debug_detail_page.html", "w") as f:
-                f.write(self.page.content())
-        except Exception as e:
-            logger.debug(f"Could not save debug files: {e}")
-
         # PRIMARY: Extract from ZoomDoc iframe (this is where Zoom puts the summary)
         iframe_summary = self._extract_summary_from_iframe()
         if iframe_summary:
@@ -1193,11 +1410,8 @@ class ZoomSync:
             finally:
                 if self.page:
                     self.page.close()
-                if self.context and not self.browser:
-                    # Persistent context
+                if self.context:
                     self.context.close()
-                elif self.browser:
-                    self.browser.close()
 
         logger.info(f"Fetched {len(all_recordings)} recordings from Zoom")
         return all_recordings

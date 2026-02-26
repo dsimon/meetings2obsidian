@@ -17,46 +17,40 @@ A command-line tool that downloads AI-generated meeting summaries from multiple 
 
 ## Requirements
 
-- Python 3.12+ (Note: REQUIREMENTS.md specifies 3.14, but using 3.12 as 3.14 is not yet released)
+- Python 3.12+
+- macOS or Linux
 - macOS, Linux, or Windows
 - Obsidian vault
 - Active accounts on the platforms you want to sync
 
 ## Installation
 
-### 1. Clone or download this repository
+### 1. Clone the repository
 
 ```bash
 git clone <repository-url>
 cd meetings2obsidian
 ```
 
-### 2. Set up Conda environment
+### 2. Configure the application
 
 ```bash
-# Create a new conda environment
-conda create -n meetings2obsidian python=3.12
-conda activate meetings2obsidian
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-
-# Install Playwright browser
-playwright install chromium
-```
-
-### 4. Configure the application
-
-```bash
-# Copy the example config file
 cp config.example.yaml config.yaml
-
-# Edit config.yaml with your settings
 nano config.yaml  # or use your preferred editor
 ```
+
+### 3. Run
+
+```bash
+./meetings2obsidian.sh
+```
+
+On first run, the script automatically:
+- Creates a `.venv` virtual environment
+- Installs Python dependencies from `requirements.txt`
+- Downloads the Playwright Chromium browser
+
+Subsequent runs skip setup and sync immediately.
 
 ## Configuration
 

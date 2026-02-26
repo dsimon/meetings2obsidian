@@ -10,6 +10,9 @@ requests>=2.31.0
 # Browser automation for Google Meet and Zoom
 playwright>=1.40.0
 
+# HTML to Markdown conversion (Zoom summary extraction)
+markdownify>=0.14.1
+
 # Note: After installing dependencies, run:
 # playwright install chromium
 # This will download the Chromium browser needed for automation
