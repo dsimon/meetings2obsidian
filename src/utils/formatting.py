@@ -33,21 +33,17 @@ class ObsidianFormatter:
         Returns:
             Sanitized filename.
         """
-        # Replace invalid characters with underscores
-        #filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        # Replace invalid characters (including path separators) with underscores
+        filename = re.sub(r'[<>:"/\\|?*\/]', "_", filename)
         # Remove leading/trailing spaces and dots
-        filename = filename.strip('. ')
+        filename = filename.strip(". ")
         # Limit length
         if len(filename) > 200:
             filename = filename[:200]
         return filename
 
     @staticmethod
-    def generate_filename(
-        meeting_date: datetime,
-        platform: str,
-        title: str
-    ) -> str:
+    def generate_filename(meeting_date: datetime, platform: str, title: str) -> str:
         """Generate a filename for a meeting summary.
 
         Args:
@@ -79,7 +75,7 @@ class ObsidianFormatter:
         frontmatter["type"] = "ainote"
 
         # Date and time fields
-        if "date" in metadata and metadata["date"]:
+        if metadata.get("date"):
             if isinstance(metadata["date"], datetime):
                 frontmatter["date"] = metadata["date"].strftime("%Y-%m-%d")
                 frontmatter["time"] = metadata["date"].strftime("%H:%M")
@@ -91,7 +87,7 @@ class ObsidianFormatter:
             frontmatter["time"] = ""
 
         # Attendees (renamed from participants)
-        if "participants" in metadata and metadata["participants"]:
+        if metadata.get("participants"):
             frontmatter["attendees"] = metadata["participants"]
         else:
             frontmatter["attendees"] = []
@@ -101,11 +97,7 @@ class ObsidianFormatter:
 
         # AI platform mapping
         platform = metadata.get("platform", "")
-        ai_map = {
-            "Heypocket": "pocket",
-            "Zoom": "zoom",
-            "GoogleMeet": "gemini"
-        }
+        ai_map = {"Heypocket": "pocket", "Zoom": "zoom", "GoogleMeet": "gemini"}
         ai_value = ai_map.get(platform, "")
         frontmatter["ai"] = [ai_value] if ai_value else []
 
@@ -113,7 +105,7 @@ class ObsidianFormatter:
         frontmatter["link"] = ""
 
         # Tags
-        if "tags" in metadata and metadata["tags"]:
+        if metadata.get("tags"):
             frontmatter["tags"] = metadata["tags"]
         else:
             frontmatter["tags"] = ["meeting"]
@@ -158,19 +150,14 @@ class ObsidianFormatter:
         formatted = ObsidianFormatter.convert_urls_to_markdown(content)
 
         # Ensure consistent line breaks
-        formatted = formatted.replace('\r\n', '\n')
+        formatted = formatted.replace("\r\n", "\n")
 
         # Remove excessive blank lines (more than 2)
-        formatted = re.sub(r'\n{3,}', '\n\n', formatted)
+        formatted = re.sub(r"\n{3,}", "\n\n", formatted)
 
         return formatted.strip()
 
-    def save_meeting(
-        self,
-        filename: str,
-        metadata: Dict[str, Any],
-        content: str
-    ) -> Path:
+    def save_meeting(self, filename: str, metadata: Dict[str, Any], content: str) -> Path:
         """Save a meeting summary to a markdown file.
 
         Args:
@@ -196,11 +183,11 @@ class ObsidianFormatter:
         full_content = frontmatter + formatted_content
 
         try:
-            with open(file_path, 'w', encoding='utf-8') as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 f.write(full_content)
             logger.info(f"Saved meeting to {file_path}")
             return file_path
-        except IOError as e:
+        except OSError as e:
             logger.error(f"Failed to write file {file_path}: {e}")
             raise
 
@@ -212,7 +199,7 @@ class ObsidianFormatter:
         content: str,
         participants: Optional[List[str]] = None,
         duration: Optional[str] = None,
-        tags: Optional[List[str]] = None
+        tags: Optional[List[str]] = None,
     ) -> Path:
         """Create a complete meeting file with metadata.
 
