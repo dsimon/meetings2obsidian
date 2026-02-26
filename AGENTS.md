@@ -175,4 +175,5 @@ Each platform sync module follows the same structure:
 - `pyyaml>=6.0.1` — YAML config parsing
 - `requests>=2.31.0` — HTTP API calls (Heypocket)
 - `playwright>=1.40.0` — Browser automation (Zoom, Google Meet)
+- `markdownify>=0.14.1` — HTML to Markdown conversion (Zoom iframe content)
 - `ruff>=0.8.0` — Linter and formatter

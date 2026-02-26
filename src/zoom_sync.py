@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional
 
+from markdownify import markdownify as html_to_markdown
 from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -876,14 +877,14 @@ class ZoomSync:
         return "No summary available"
 
     def _extract_summary_from_iframe(self) -> Optional[str]:
-        """Extract summary content from the ZoomDoc iframe.
+        """Extract summary content from the ZoomDoc iframe as markdown.
 
         Zoom renders meeting summaries inside a cross-origin iframe
-        pointing to docs.zoom.us. This method accesses the iframe
-        content using Playwright's frame API.
+        pointing to docs.zoom.us. This method extracts the HTML content
+        and converts it to properly formatted markdown.
 
         Returns:
-            Summary text if found, None otherwise.
+            Markdown-formatted summary text if found, None otherwise.
         """
         try:
             # Find the docs.zoom.us frame among all page frames
@@ -899,33 +900,100 @@ class ZoomSync:
 
             logger.debug(f"Found ZoomDoc iframe: {frame.url}")
 
-            # Extract text content from the iframe body
+            # Extract HTML content from the iframe body for markdown conversion
+            try:
+                html_content = frame.locator("body").inner_html(timeout=5000)
+            except PlaywrightTimeoutError:
+                logger.debug("Timeout reading iframe body HTML")
+                return None
+
+            if not html_content or len(html_content.strip()) < 50:
+                logger.debug(f"Iframe HTML too short ({len(html_content.strip()) if html_content else 0} chars)")
+                return None
+
+            logger.debug(f"Extracted {len(html_content)} chars of HTML from iframe")
+
+            # Convert HTML to markdown
+            markdown = self._convert_html_to_markdown(html_content)
+            if markdown and len(markdown) > 100:
+                return markdown
+
+            # Fallback: plain text extraction if HTML conversion failed
             try:
                 body_text = frame.locator("body").inner_text(timeout=5000)
+                if body_text and len(body_text.strip()) > 100:
+                    logger.debug("HTML-to-markdown conversion insufficient, using plain text")
+                    return body_text.strip()
             except PlaywrightTimeoutError:
-                logger.debug("Timeout reading iframe body text")
-                return None
-
-            if not body_text or len(body_text.strip()) < 50:
-                logger.debug(f"Iframe body too short ({len(body_text.strip()) if body_text else 0} chars)")
-                return None
-
-            text = body_text.strip()
-            logger.debug(f"Extracted {len(text)} chars from iframe")
-
-            # Clean the text — remove any navigation/metadata elements
-            cleaned = self._clean_summary_text(text)
-            if cleaned and len(cleaned) > 100:
-                return cleaned
-
-            # If cleaning was too aggressive, return raw text if it's substantial
-            if len(text) > 100:
-                return text
+                pass
 
             return None
         except Exception as e:
             logger.debug(f"Error extracting from iframe: {e}")
             return None
+
+    def _convert_html_to_markdown(self, html: str) -> str:
+        """Convert HTML content from Zoom's summary iframe to clean markdown.
+
+        Args:
+            html: Raw HTML content from the ZoomDoc iframe.
+
+        Returns:
+            Cleaned markdown string.
+        """
+        # Convert HTML to markdown, stripping non-content elements
+        markdown = html_to_markdown(
+            html,
+            heading_style="ATX",
+            bullets="-",
+            strip=["script", "style", "nav", "footer", "header", "img"],
+            convert=[
+                "h1",
+                "h2",
+                "h3",
+                "h4",
+                "h5",
+                "h6",
+                "p",
+                "ul",
+                "ol",
+                "li",
+                "strong",
+                "b",
+                "em",
+                "i",
+                "a",
+                "br",
+                "blockquote",
+                "pre",
+                "code",
+                "table",
+                "thead",
+                "tbody",
+                "tr",
+                "th",
+                "td",
+            ],
+        )
+
+        # Clean up the markdown output
+        lines = markdown.split("\n")
+        cleaned_lines = []
+        for line in lines:
+            # Strip trailing whitespace but preserve leading (indentation for lists)
+            line = line.rstrip()
+            cleaned_lines.append(line)
+
+        result = "\n".join(cleaned_lines)
+
+        # Collapse excessive blank lines (more than 2 consecutive)
+        result = re.sub(r"\n{3,}", "\n\n", result)
+
+        # Remove any leading/trailing whitespace
+        result = result.strip()
+
+        logger.debug(f"Converted HTML to {len(result)} chars of markdown")
+        return result
 
     def _extract_summary_from_detail_page(self) -> str:
         """Extract AI summary from the summary detail page.
