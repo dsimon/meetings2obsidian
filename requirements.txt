@@ -13,3 +13,6 @@ playwright>=1.40.0
 # Note: After installing dependencies, run:
 # playwright install chromium
 # This will download the Chromium browser needed for automation
+
+# Development tools
+ruff>=0.8.0                # Linter and formatter
