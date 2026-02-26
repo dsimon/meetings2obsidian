@@ -993,6 +993,116 @@ class ZoomSync:
             logger.warning(f"Error extracting from iframe: {e}")
             return None
 
+    def _preprocess_zoom_html(self, html: str) -> str:
+        """Preprocess ZoomDocs HTML into standard semantic HTML before markdown conversion.
+
+        ZoomDocs uses a non-standard HTML structure (React/Slate-based editor) that
+        markdownify cannot handle correctly. This method normalizes the HTML:
+          - Unwraps <p> tags nested inside <h2>/<h3> (which break heading conversion)
+          - Converts <div class="zm-bulleted-list-block"> to <ul><li> lists
+          - Converts <div class="zm-paragraph-block"> to <p> tags
+          - Removes decorative bullet symbol containers (blot-slots)
+          - Removes zero-width spaces and byte-order marks
+          - Strips Zoom task link icons (SVG elements inside links)
+
+        Args:
+            html: Raw HTML from the ZoomDoc iframe.
+
+        Returns:
+            Preprocessed HTML with standard semantic structure.
+        """
+        # Remove script and style tags entirely (markdownify's strip only removes
+        # the tags but keeps inner text content, which leaks JS/CSS into output)
+        html = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+        html = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL)
+
+        # Remove zero-width spaces (&#8203; / \u200b) and byte-order marks (\ufeff)
+        html = html.replace("\u200b", "").replace("\ufeff", "")
+        html = re.sub(r"&#8203;", "", html)
+
+        # Remove blot-slots containers (decorative bullet symbols)
+        html = re.sub(r'<div class="blot-slots"[^>]*>.*?</div>\s*</div>', "", html, flags=re.DOTALL)
+
+        # Remove SVG icons inside links (task link icons)
+        html = re.sub(r"<svg[^>]*>.*?</svg>", "", html, flags=re.DOTALL)
+
+        # Remove zm-page-link-icon spans (wrappers around task SVGs)
+        html = re.sub(r'<span class="zm-page-link-icon"[^>]*>\s*</span>', "", html, flags=re.DOTALL)
+
+        # Unwrap <p class="zm-block-content"> inside <h2>/<h3> — replace <p> with <span>
+        # so markdownify sees <h2><span>text</span></h2> instead of <h2><p>text</p></h2>
+        html = re.sub(
+            r'(<h[23][^>]*>)\s*<p class="zm-block-content">(.*?)</p>\s*(</h[23]>)',
+            r"\1\2\3",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Convert zm-bulleted-list-block divs to <li> tags.
+        # Extract the content from the inner <p class="zm-block-content">.
+        html = re.sub(
+            r'<div class="zm-bulleted-list-block"[^>]*>\s*<p class="zm-block-content">(.*?)</p>\s*</div>',
+            r"<li>\1</li>",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Wrap consecutive <li> groups in <ul> tags
+        html = re.sub(
+            r"((?:<li>.*?</li>\s*)+)",
+            r"<ul>\1</ul>",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Convert zm-paragraph-block divs to <p> tags.
+        # Extract the content from the inner <p class="zm-block-content">.
+        html = re.sub(
+            r'<div class="zm-paragraph-block"[^>]*>\s*<p class="zm-block-content">(.*?)</p>\s*</div>',
+            r"<p>\1</p>",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Extract link text from zm-link structures.
+        # Pattern: <a class="zm-link" ...>
+        #   <span class="zm-link-inner"><span class="zm-link-text">TEXT</span></span>
+        # </a>
+        # Replace with just the text content (these are Zoom task links, not useful URLs).
+        html = re.sub(
+            r'<a class="zm-link"[^>]*>[^<]*<span[^>]*class="zm-link-inner"[^>]*>'
+            r'\s*<span class="zm-link-text[^"]*">([^<]+)</span>\s*</span>\s*</a>',
+            r"\1",
+            html,
+            flags=re.DOTALL,
+        )
+
+        # Remove empty text-segment spans (often just held zero-width spaces, now empty)
+        html = re.sub(r'<span class="text-segment">\s*</span>', "", html, flags=re.DOTALL)
+
+        # Remove data attributes and Zoom-specific attributes to reduce noise
+        html = re.sub(
+            r"\s+(?:data-block-id|data-block-type|zm-author"
+            r'|data-correction|id="aria-id)[^"]*"[^"]*"',
+            "",
+            html,
+        )
+
+        # Remove contenteditable attributes
+        html = re.sub(r'\s+contenteditable="[^"]*"', "", html)
+
+        # Remove the template header and docs container wrapper divs
+        html = re.sub(
+            r'<div class="docs-web-summary-container-header"[^>]*>.*?'
+            r"</div>\s*</div>\s*</div>",
+            "",
+            html,
+            flags=re.DOTALL,
+        )
+
+        logger.debug(f"Preprocessed ZoomDocs HTML ({len(html)} chars)")
+        return html
+
     def _convert_html_to_markdown(self, html: str) -> str:
         """Convert HTML content from Zoom's summary iframe to clean markdown.
 
@@ -1002,9 +1112,10 @@ class ZoomSync:
         Returns:
             Cleaned markdown string.
         """
-        # Convert HTML to markdown using defaults for broad tag support.
-        # Do NOT pass convert=[] whitelist — ZoomDocs may use non-semantic
-        # HTML (divs with classes) and the whitelist would skip them.
+        # Preprocess ZoomDocs HTML to normalize non-standard structure
+        html = self._preprocess_zoom_html(html)
+
+        # Convert preprocessed HTML to markdown
         markdown = html_to_markdown(
             html,
             heading_style="ATX",
@@ -1024,6 +1135,18 @@ class ZoomSync:
 
         # Collapse excessive blank lines (more than 2 consecutive)
         result = re.sub(r"\n{3,}", "\n\n", result)
+
+        # Remove Zoom UI noise that leaks from the editor container
+        result = re.sub(r"(?m)^Template:.*$\n?", "", result)
+        result = re.sub(r"(?m)^General template.*$\n?", "", result)
+        result = re.sub(r"AI can make mistakes\..*$", "", result, flags=re.MULTILINE)
+        result = re.sub(r"(?m)^NEWMeeting summary templates.*$\n?", "", result)
+        result = re.sub(
+            r"You can now regenerate your meeting summary.*$",
+            "",
+            result,
+            flags=re.MULTILINE,
+        )
 
         # Remove any leading/trailing whitespace
         result = result.strip()
