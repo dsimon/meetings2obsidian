@@ -6,7 +6,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -14,8 +14,8 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.config_loader import ConfigLoader
-from src.utils.state_manager import StateManager
 from src.utils.formatting import ObsidianFormatter
+from src.utils.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +45,7 @@ class HeypocketSync:
             "Content-Type": "application/json",
         }
 
-    def _make_api_request(
-        self,
-        endpoint: str,
-        params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def _make_api_request(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Make an API request to Heypocket.
 
         Args:
@@ -84,7 +80,7 @@ class HeypocketSync:
         params = {
             "limit": 100,  # Max per page
             "page": 1,
-            "include_summarizations": "true"  # Include summarizations in the response
+            "include_summarizations": "true",  # Include summarizations in the response
         }
 
         if since:
@@ -155,10 +151,7 @@ class HeypocketSync:
         Returns:
             Recording details with transcript and summarizations.
         """
-        params = {
-            "include_transcript": "true",
-            "include_summarizations": "true"
-        }
+        params = {"include_transcript": "true", "include_summarizations": "true"}
 
         try:
             response = self._make_api_request(f"public/recordings/{recording_id}", params)
@@ -184,10 +177,7 @@ class HeypocketSync:
             return None
 
     def process_recording(
-        self,
-        recording: Dict[str, Any],
-        formatter: ObsidianFormatter,
-        state_manager: StateManager
+        self, recording: Dict[str, Any], formatter: ObsidianFormatter, state_manager: StateManager
     ) -> Optional[Path]:
         """Process a single recording.
 
@@ -211,7 +201,7 @@ class HeypocketSync:
                 return None
 
             # Check if recording already has summarizations (from list endpoint)
-            if "summarizations" in recording and recording["summarizations"]:
+            if recording.get("summarizations"):
                 logger.debug(f"Using summarizations from list endpoint for {recording_id}")
                 details = recording
             else:
@@ -230,7 +220,9 @@ class HeypocketSync:
             # Debug: Log what fields are present
             logger.debug(f"Recording {recording_id} has fields: {list(details.keys())}")
             if "summarizations" in details:
-                logger.debug(f"Summarizations type: {type(details['summarizations'])}, count: {len(details['summarizations']) if isinstance(details['summarizations'], list) else 'N/A'}")
+                summ = details["summarizations"]
+                summ_count = len(summ) if isinstance(summ, list) else "N/A"
+                logger.debug(f"Summarizations type: {type(summ)}, count: {summ_count}")
 
             # Extract recording data
             title = details.get("title", "Untitled Recording")
@@ -248,7 +240,7 @@ class HeypocketSync:
             if date_field:
                 try:
                     # Parse as UTC and convert to local timezone
-                    meeting_date_utc = datetime.fromisoformat(date_field.replace('Z', '+00:00'))
+                    meeting_date_utc = datetime.fromisoformat(date_field.replace("Z", "+00:00"))
                     meeting_date = meeting_date_utc.astimezone()
                     logger.debug(f"Using recording date from API: {date_field} (UTC) -> {meeting_date} (local)")
                 except ValueError:
@@ -276,7 +268,11 @@ class HeypocketSync:
                             # Handle nested dict structure (e.g., v2_summary has 'markdown' key)
                             if isinstance(summary_data, dict):
                                 # Look for 'markdown', 'text', or 'content' keys
-                                summary_text = summary_data.get("markdown") or summary_data.get("text") or summary_data.get("content")
+                                summary_text = (
+                                    summary_data.get("markdown")
+                                    or summary_data.get("text")
+                                    or summary_data.get("content")
+                                )
                             else:
                                 summary_text = summary_data
 
@@ -293,7 +289,11 @@ class HeypocketSync:
                         for summary_type, summary_data in summarizations.items():
                             # Handle nested dict structure
                             if isinstance(summary_data, dict):
-                                summary_text = summary_data.get("markdown") or summary_data.get("text") or summary_data.get("content")
+                                summary_text = (
+                                    summary_data.get("markdown")
+                                    or summary_data.get("text")
+                                    or summary_data.get("content")
+                                )
                             else:
                                 summary_text = summary_data
 
@@ -341,7 +341,7 @@ class HeypocketSync:
                 content=content,
                 participants=None,  # Heypocket API doesn't provide participant list
                 duration=duration_str,
-                tags=tags
+                tags=tags,
             )
 
             # Record in state
@@ -350,7 +350,7 @@ class HeypocketSync:
                 platform="Heypocket",
                 file_path=str(file_path),
                 meeting_title=title,
-                meeting_date=meeting_date.isoformat()
+                meeting_date=meeting_date.isoformat(),
             )
 
             logger.info(f"Saved recording: {title}")
@@ -423,9 +423,7 @@ def setup_logging(verbose: bool = False) -> None:
     """
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
 
 

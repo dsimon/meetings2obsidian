@@ -1,0 +1,40 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific rules
+]
+ignore = [
+    "E402",   # module-level import not at top — needed for sys.path.insert hack
+    "UP006",  # use builtin type instead of typing.List/Dict — project convention uses typing imports
+    "UP007",  # use X | Y instead of Optional[X] — project convention uses Optional
+    "UP035",  # deprecated typing imports — project convention uses typing.List/Dict/Optional
+    "UP045",  # Optional[X] → X | None — project convention uses Optional[X]
+    "SIM102", # nested if — often more readable for complex browser-automation conditionals
+    "SIM108", # ternary operator — loses inline comments and harms readability
+    "SIM114", # combine if branches — branches have different semantics even when same body
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/zoom_sync.py" = ["B007"]  # unused loop variable in broad try/except retry loops
+
+[tool.ruff.lint.isort]
+known-third-party = ["requests", "yaml", "playwright"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

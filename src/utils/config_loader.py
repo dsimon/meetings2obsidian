@@ -3,7 +3,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 import yaml
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class ConfigLoader:
     """Handles loading and validation of configuration files."""
 
-    DEFAULT_CONFIG_PATHS = [
+    DEFAULT_CONFIG_PATHS: ClassVar[List[str]] = [
         "config.yaml",
         os.path.expanduser("~/.config/meetings2obsidian/config.yaml"),
     ]
@@ -67,7 +67,7 @@ class ConfigLoader:
             ValueError: If the config file is malformed.
         """
         try:
-            with open(self.config_path, 'r') as f:
+            with open(self.config_path) as f:
                 config = yaml.safe_load(f)
 
             if config is None:
@@ -75,7 +75,7 @@ class ConfigLoader:
 
             return config
         except yaml.YAMLError as e:
-            raise ValueError(f"Invalid YAML in config file: {e}")
+            raise ValueError(f"Invalid YAML in config file: {e}") from e
 
     def _validate_config(self) -> None:
         """Validate required configuration fields.
