@@ -809,9 +809,9 @@ class ZoomSync:
     def _wait_for_summary_content(self, max_wait: int = 60) -> str:
         """Wait for summary content to load on the detail page.
 
-        Zoom renders meeting summaries inside a cross-origin iframe
-        (docs.zoom.us). This method waits for the iframe to appear,
-        then polls its content until it stabilizes (stops changing).
+        Zoom renders meeting summaries inside a cross-origin iframe.
+        This method waits for the iframe to appear, then polls its
+        content until it stabilizes (stops changing).
 
         Args:
             max_wait: Maximum seconds to wait for content.
@@ -821,15 +821,34 @@ class ZoomSync:
         """
         logger.info(f"Waiting up to {max_wait}s for summary content to load...")
 
-        # Wait for the ZoomDoc iframe to appear — this is where Zoom renders summaries
-        iframe_selector = "iframe[src*='docs.zoom.us'], iframe[title*='Summary']"
+        # Save debug files ONCE at the start (not per-poll)
+        try:
+            self.page.screenshot(path="zoom_debug_detail_page.png")
+            with open("zoom_debug_detail_page.html", "w") as f:
+                f.write(self.page.content())
+        except Exception:
+            pass
+
+        # Wait for ANY iframe to appear on the detail page
+        iframe_selector = "iframe[src*='docs.zoom.us'], iframe[title*='Summary'], iframe[src*='zoom.us/doc']"
         try:
             self.page.wait_for_selector(iframe_selector, timeout=20000, state="attached")
-            logger.debug("ZoomDoc iframe appeared, waiting for content to render...")
-            # Give the iframe time to start loading its document content
+            logger.info("Summary iframe appeared, waiting for content to render...")
             time.sleep(5)
         except PlaywrightTimeoutError:
-            logger.warning("ZoomDoc iframe did not appear within 20s, will try parent page")
+            # Log what iframes DO exist to aid debugging
+            try:
+                iframes = self.page.locator("iframe").all()
+                if iframes:
+                    for iframe in iframes:
+                        src = iframe.get_attribute("src") or "(no src)"
+                        title = iframe.get_attribute("title") or "(no title)"
+                        logger.info(f"  Found iframe: src={src[:100]}, title={title}")
+                else:
+                    logger.info("  No iframes found on page at all")
+            except Exception:
+                pass
+            logger.warning("Expected summary iframe did not appear within 20s")
 
         start_time = time.time()
         last_summary = ""
@@ -880,59 +899,86 @@ class ZoomSync:
         return "No summary available"
 
     def _extract_summary_from_iframe(self) -> Optional[str]:
-        """Extract summary content from the ZoomDoc iframe as markdown.
+        """Extract summary content from an iframe on the detail page.
 
         Zoom renders meeting summaries inside a cross-origin iframe
-        pointing to docs.zoom.us. This method extracts the HTML content
-        and converts it to properly formatted markdown.
+        (typically docs.zoom.us). This method finds the iframe, extracts
+        its HTML content, and converts it to formatted markdown.
 
         Returns:
             Markdown-formatted summary text if found, None otherwise.
         """
         try:
-            # Find the docs.zoom.us frame among all page frames
-            frame = None
+            # Collect all non-main-page frames
+            main_url = self.page.url
+            candidate_frames = []
             for f in self.page.frames:
-                if "docs.zoom.us" in f.url:
-                    frame = f
+                if f.url and f.url != main_url and f.url != "about:blank":
+                    candidate_frames.append(f)
+
+            if not candidate_frames:
+                logger.debug("No child frames found on page")
+                return None
+
+            # Try to find the summary frame by URL pattern (preferred)
+            frame = None
+            zoom_patterns = ["docs.zoom.us", "zoom.us/doc", "zoomdocs"]
+            for f in candidate_frames:
+                for pattern in zoom_patterns:
+                    if pattern in f.url:
+                        frame = f
+                        break
+                if frame:
                     break
 
+            # If no Zoom doc frame found, try the largest non-utility iframe
             if not frame:
-                logger.debug("No docs.zoom.us iframe found")
+                logger.info(
+                    f"No Zoom doc iframe found among {len(candidate_frames)} frame(s). Trying largest content frame..."
+                )
+                for f in candidate_frames:
+                    logger.info(f"  Frame URL: {f.url[:120]}")
+                # Use the first non-trivial frame (skip analytics/tracking iframes)
+                for f in candidate_frames:
+                    try:
+                        text = f.locator("body").inner_text(timeout=3000)
+                        if text and len(text.strip()) > 100:
+                            frame = f
+                            logger.info(f"  Using frame with {len(text.strip())} chars of text")
+                            break
+                    except Exception:
+                        continue
+
+            if not frame:
                 return None
 
-            logger.debug(f"Found ZoomDoc iframe: {frame.url}")
+            logger.debug(f"Extracting from iframe: {frame.url[:120]}")
 
-            # Extract HTML content from the iframe body for markdown conversion
+            # Try HTML extraction + markdown conversion first
             try:
                 html_content = frame.locator("body").inner_html(timeout=5000)
+                if html_content and len(html_content.strip()) > 50:
+                    markdown = self._convert_html_to_markdown(html_content)
+                    if markdown and len(markdown) > 100:
+                        return markdown
+                    logger.debug(f"HTML-to-markdown produced only {len(markdown) if markdown else 0} chars")
             except PlaywrightTimeoutError:
-                logger.debug("Timeout reading iframe body HTML")
-                return None
+                logger.debug("Timeout reading iframe HTML")
+            except Exception as e:
+                logger.debug(f"Error reading iframe HTML: {e}")
 
-            if not html_content or len(html_content.strip()) < 50:
-                logger.debug(f"Iframe HTML too short ({len(html_content.strip()) if html_content else 0} chars)")
-                return None
-
-            logger.debug(f"Extracted {len(html_content)} chars of HTML from iframe")
-
-            # Convert HTML to markdown
-            markdown = self._convert_html_to_markdown(html_content)
-            if markdown and len(markdown) > 100:
-                return markdown
-
-            # Fallback: plain text extraction if HTML conversion failed
+            # Fallback: plain text extraction
             try:
                 body_text = frame.locator("body").inner_text(timeout=5000)
                 if body_text and len(body_text.strip()) > 100:
-                    logger.debug("HTML-to-markdown conversion insufficient, using plain text")
+                    logger.debug("Using plain text extraction from iframe")
                     return body_text.strip()
             except PlaywrightTimeoutError:
-                pass
+                logger.debug("Timeout reading iframe text")
 
             return None
         except Exception as e:
-            logger.debug(f"Error extracting from iframe: {e}")
+            logger.warning(f"Error extracting from iframe: {e}")
             return None
 
     def _convert_html_to_markdown(self, html: str) -> str:
@@ -1007,16 +1053,6 @@ class ZoomSync:
         Returns:
             Summary text or "No summary available".
         """
-        # Save detail page for debugging
-        try:
-            detail_url = self.page.url
-            logger.debug(f"Checking for summary content at: {detail_url}")
-            self.page.screenshot(path="zoom_debug_detail_page.png")
-            with open("zoom_debug_detail_page.html", "w") as f:
-                f.write(self.page.content())
-        except Exception as e:
-            logger.debug(f"Could not save debug files: {e}")
-
         # PRIMARY: Extract from ZoomDoc iframe (this is where Zoom puts the summary)
         iframe_summary = self._extract_summary_from_iframe()
         if iframe_summary:
