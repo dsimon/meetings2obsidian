@@ -528,6 +528,48 @@ class GoogleMeetSync:
 
         return docs
 
+    def _find_shared_with_me_gemini_notes(self) -> List[Dict[str, Any]]:
+        """Navigate to 'Shared with me' and collect Gemini meeting note documents.
+
+        The Drive search URL doesn't reliably surface documents shared with the
+        user (it skews toward 'My Drive'). Navigating directly to the
+        'Shared with me' section ensures we see all files the user has access
+        to from meetings they attended but didn't host.
+
+        Returns:
+            List of meeting doc dicts with keys: doc_id, title, url.
+        """
+        docs = []
+
+        try:
+            logger.info("Navigating to 'Shared with me' in Google Drive...")
+            self.page.goto(
+                "https://drive.google.com/drive/shared-with-me",
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+            self._wait_for_page_ready(timeout=15000)
+            time.sleep(3)  # Extra wait for Drive SPA to render results
+
+            all_docs = self._collect_doc_links_from_drive_page()
+
+            # Filter to Gemini meeting note documents by title
+            gemini_keywords = ["notes by gemini", "gemini notes", "meet recording"]
+            for doc in all_docs:
+                title_lower = doc.get("title", "").lower()
+                if any(kw in title_lower for kw in gemini_keywords):
+                    docs.append(doc)
+
+            logger.info(
+                f"Found {len(docs)} Gemini notes in 'Shared with me' "
+                f"(out of {len(all_docs)} total shared documents)"
+            )
+
+        except Exception as e:
+            logger.error(f"Error searching 'Shared with me': {e}")
+
+        return docs
+
     def _extract_doc_content(self, doc_id: str) -> Optional[str]:
         """Export a Google Doc as HTML using the authenticated browser session.
 
@@ -717,15 +759,19 @@ class GoogleMeetSync:
                     logger.error("Failed to navigate to Google Drive")
                     return []
 
-                # Source 1: Meet Recordings folder
+                # Source 1: Meet Recordings folder (user's own hosted meetings)
                 meet_recordings = self._find_meet_recordings_folder()
                 all_docs.extend(meet_recordings)
 
-                # Source 2: Shared "Notes by Gemini" documents
+                # Source 2: Drive search for "Notes by Gemini" (catches My Drive copies)
                 gemini_notes = self._find_shared_gemini_notes()
                 all_docs.extend(gemini_notes)
 
-                # Deduplicate (same doc may appear in both sources)
+                # Source 3: "Shared with me" section (meetings attended but not hosted)
+                shared_with_me = self._find_shared_with_me_gemini_notes()
+                all_docs.extend(shared_with_me)
+
+                # Deduplicate (same doc may appear in multiple sources)
                 all_docs = self._deduplicate_docs(all_docs)
                 logger.info(f"Total unique documents found: {len(all_docs)}")
 
