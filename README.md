@@ -9,7 +9,8 @@ A command-line tool that downloads AI-generated meeting summaries from multiple 
 - **Duplicate prevention**: Tracks downloaded meetings to avoid duplicates
 - **Flexible configuration**: YAML-based configuration with platform-specific settings
 - **API integration**: Direct API access for Heypocket
-- **Browser automation**: Persistent browser sessions for Zoom and Google Meet (login persists between runs)
+- **Browser automation**: Persistent browser sessions for Zoom and Google Meet — login persists between runs via shared Chrome profile
+- **Google Drive integration**: Google Meet sync discovers Gemini-generated meeting notes from Google Drive (no scraping required)
 - **Incremental sync**: Only downloads new meetings since last sync
 - **Timezone conversion**: Automatically converts all timestamps from UTC to local timezone
 - **Custom frontmatter**: Structured metadata with type, date, time, attendees, meeting-type, ai platform tags, and links
@@ -76,23 +77,24 @@ platforms:
 
 Get your API key from the Heypocket dashboard.
 
-#### Google Meet (Browser automation)
+#### Google Meet (Browser automation + Google Drive)
 
 ```yaml
 platforms:
   googlemeet:
     enabled: true
     browser:
-      # Optional: Use existing Chrome profile for persistent login
-      user_data_dir: /Users/username/Library/Application Support/Google/Chrome/Default
+      # Optional: defaults to ~/.meetings2obsidian/chrome_profile/
+      # which persists your Google session between runs.
+      # Shared with Zoom — both platforms use the same profile.
+      user_data_dir: null
 ```
 
-**Finding your Chrome profile path:**
+Google Meet sync discovers Gemini-generated meeting notes from Google Drive — both notes in your own "Meet Recordings" folder and shared "Notes by Gemini" documents. On first run, log into Google in the browser window that opens. Your session is saved to `~/.meetings2obsidian/chrome_profile/` and reused on subsequent runs.
+
+You can also point `user_data_dir` at an existing Chrome profile:
 - **macOS**: `~/Library/Application Support/Google/Chrome/Default`
 - **Linux**: `~/.config/google-chrome/Default`
-- **Windows**: `C:\Users\username\AppData\Local\Google\Chrome\User Data\Default`
-
-Set to `null` to use a fresh browser session (you'll need to log in each time).
 
 #### Zoom (Browser automation)
 
@@ -103,10 +105,11 @@ platforms:
     browser:
       # Optional: defaults to ~/.meetings2obsidian/chrome_profile/
       # which persists your Zoom session between runs.
+      # Shared with Google Meet — both platforms use the same profile.
       user_data_dir: null
 ```
 
-Zoom uses browser automation to extract AI-generated meeting summaries. On first run, you'll need to log into Zoom in the browser window that opens. Your session is saved to a persistent profile so you won't need to log in again.
+Zoom uses browser automation to extract AI-generated meeting summaries. On first run, you'll need to log into Zoom in the browser window that opens. Your session is saved to `~/.meetings2obsidian/chrome_profile/` so you won't need to log in again.
 
 See [ZOOM_SETUP.md](ZOOM_SETUP.md) for detailed setup instructions.
 
@@ -165,10 +168,10 @@ Meeting notes are saved as markdown files with the following format:
 ### File naming
 
 ```text
-{title} - {date}.md
+{date} - {title}.md
 ```
 
-Example: `Weekly Team Sync - 2024-01-25.md`
+Example: `2024-01-25 - Weekly Team Sync.md`
 
 **Note**: All dates and times are automatically converted from UTC to your local timezone.
 
@@ -270,10 +273,11 @@ cp config.example.yaml config.yaml
 
 ### Browser automation not working (Zoom / Google Meet)
 
-1. Ensure you're signed in to Google in your Chrome browser
-2. Check that the `user_data_dir` path in config.yaml is correct
-3. Try setting `user_data_dir: null` to use a fresh browser session
+1. On first run, log into Google/Zoom in the browser window that opens
+2. Sessions are saved to `~/.meetings2obsidian/chrome_profile/` — delete this folder to force re-login
+3. If you set a custom `user_data_dir`, verify the path is correct
 4. Make sure Playwright is installed: `playwright install chromium`
+5. Close Chrome before running if you're sharing a Chrome profile
 
 ### Zoom browser automation issues
 
