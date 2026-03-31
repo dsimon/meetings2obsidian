@@ -46,15 +46,17 @@ class GoogleMeetSync:
     DRIVE_SEARCH_URL = "https://drive.google.com/drive/search?q={query}"
     DOCS_EXPORT_URL = "https://docs.google.com/document/d/{doc_id}/export?format=html"
 
-    def __init__(self, config: ConfigLoader, dry_run: bool = False):
+    def __init__(self, config: ConfigLoader, dry_run: bool = False, debug: bool = False):
         """Initialize Google Meet sync.
 
         Args:
             config: Configuration loader.
             dry_run: If True, don't save files or update state.
+            debug: If True, save debug artifacts (screenshots, HTML) for troubleshooting.
         """
         self.config = config
         self.dry_run = dry_run
+        self.debug = debug
         self.platform_config = config.get_platform_config("googlemeet")
         self.context = None
         self.page: Optional[Page] = None
@@ -356,13 +358,14 @@ class GoogleMeetSync:
             List of dicts with keys: doc_id, title, url.
         """
         # Save debug HTML for troubleshooting on first run
-        try:
-            self.page.screenshot(path="googlemeet_debug_drive_page.png")
-            with open("googlemeet_debug_drive_page.html", "w") as f:
-                f.write(self.page.content())
-            logger.debug("Saved Drive page debug files")
-        except Exception:
-            pass
+        if self.debug:
+            try:
+                self.page.screenshot(path="googlemeet_debug_drive_page.png")
+                with open("googlemeet_debug_drive_page.html", "w") as f:
+                    f.write(self.page.content())
+                logger.debug("Saved Drive page debug files")
+            except Exception:
+                pass
 
         results = self.page.evaluate("""
             () => {
@@ -570,12 +573,13 @@ class GoogleMeetSync:
             Cleaned markdown string.
         """
         # Save debug HTML for troubleshooting
-        try:
-            with open("googlemeet_debug_doc_export.html", "w") as f:
-                f.write(html)
-            logger.debug("Saved doc export HTML to googlemeet_debug_doc_export.html")
-        except Exception:
-            pass
+        if self.debug:
+            try:
+                with open("googlemeet_debug_doc_export.html", "w") as f:
+                    f.write(html)
+                logger.debug("Saved doc export HTML to googlemeet_debug_doc_export.html")
+            except Exception:
+                pass
 
         # Remove style tags (Google Docs exports include inline CSS)
         html = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL)
@@ -946,6 +950,7 @@ def main():
     parser.add_argument("--since", help="Fetch meetings since date (ISO format)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be downloaded without saving")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--debug", action="store_true", help="Save debug screenshots/HTML for troubleshooting")
 
     args = parser.parse_args()
 
@@ -965,7 +970,7 @@ def main():
                 return 1
 
         # Run sync
-        sync = GoogleMeetSync(config, dry_run=args.dry_run)
+        sync = GoogleMeetSync(config, dry_run=args.dry_run, debug=args.debug)
         count = sync.sync(since)
 
         logger.info(f"Sync completed successfully: {count} meetings")
