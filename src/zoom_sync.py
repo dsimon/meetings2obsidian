@@ -117,18 +117,18 @@ class ZoomSync:
                 logger.warning("Not authenticated - on login page")
                 return False
 
-            # Check for sign-in button or login form
-            login_indicators = [
-                "text=/Sign In/i",
-                "text=/Log In/i",
-                "#email",  # Login form email field
+            # Check for the actual login form (not just "Sign In" text which appears
+            # in navigation on authenticated pages too)
+            login_form_indicators = [
+                "#email",        # Login form email field
                 "[name='email']",
+                "#password",     # Login form password field
             ]
 
-            for selector in login_indicators:
+            for selector in login_form_indicators:
                 try:
                     if self.page.locator(selector).count() > 0:
-                        logger.warning(f"Found login indicator: {selector}")
+                        logger.warning(f"Found login form element: {selector}")
                         return False
                 except Exception:
                     pass
