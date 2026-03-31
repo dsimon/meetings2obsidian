@@ -34,15 +34,17 @@ class ZoomSync:
     ]
     ZOOM_LOGIN_URL = "https://zoom.us/signin"
 
-    def __init__(self, config: ConfigLoader, dry_run: bool = False):
+    def __init__(self, config: ConfigLoader, dry_run: bool = False, debug: bool = False):
         """Initialize Zoom sync.
 
         Args:
             config: Configuration loader.
             dry_run: If True, don't save files or update state.
+            debug: If True, save debug artifacts (screenshots, HTML) for troubleshooting.
         """
         self.config = config
         self.dry_run = dry_run
+        self.debug = debug
         self.platform_config = config.get_platform_config("zoom")
         self.context = None
         self.context = None
@@ -315,7 +317,8 @@ class ZoomSync:
                     else:
                         # Save debug info for troubleshooting
                         logger.debug(f"Content check failed for {url}")
-                        self.page.screenshot(path="zoom_debug_content_check.png")
+                        if self.debug:
+                            self.page.screenshot(path="zoom_debug_content_check.png")
                         logger.debug("Saved debug screenshot to zoom_debug_content_check.png")
                 except Exception as e:
                     error_msg = str(e)
@@ -566,12 +569,13 @@ class ZoomSync:
 
             if not recording_elements:
                 logger.warning("Could not find recording elements on page")
-                # Take screenshot and save HTML for debugging
-                self.page.screenshot(path="zoom_debug_page.png")
-                logger.debug("Saved debug screenshot to zoom_debug_page.png")
-                with open("zoom_debug_page.html", "w") as f:
-                    f.write(self.page.content())
-                logger.debug("Saved debug HTML to zoom_debug_page.html")
+                if self.debug:
+                    # Take screenshot and save HTML for debugging
+                    self.page.screenshot(path="zoom_debug_page.png")
+                    logger.debug("Saved debug screenshot to zoom_debug_page.png")
+                    with open("zoom_debug_page.html", "w") as f:
+                        f.write(self.page.content())
+                    logger.debug("Saved debug HTML to zoom_debug_page.html")
                 return []
 
             logger.info(f"Found {len(recording_elements)} recording elements")
@@ -822,12 +826,13 @@ class ZoomSync:
         logger.info(f"Waiting up to {max_wait}s for summary content to load...")
 
         # Save debug files ONCE at the start (not per-poll)
-        try:
-            self.page.screenshot(path="zoom_debug_detail_page.png")
-            with open("zoom_debug_detail_page.html", "w") as f:
-                f.write(self.page.content())
-        except Exception:
-            pass
+        if self.debug:
+            try:
+                self.page.screenshot(path="zoom_debug_detail_page.png")
+                with open("zoom_debug_detail_page.html", "w") as f:
+                    f.write(self.page.content())
+            except Exception:
+                pass
 
         # Wait for ANY iframe to appear on the detail page
         iframe_selector = "iframe[src*='docs.zoom.us'], iframe[title*='Summary'], iframe[src*='zoom.us/doc']"
@@ -964,7 +969,7 @@ class ZoomSync:
                 logger.debug(f"Error reading iframe HTML: {e}")
                 html_content = None
 
-            if html_content:
+            if html_content and self.debug:
                 try:
                     with open("zoom_debug_iframe.html", "w") as f:
                         f.write(html_content)
@@ -1567,6 +1572,7 @@ def main():
     parser.add_argument("--since", help="Fetch recordings since date (YYYY-MM-DD)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be downloaded without saving")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--debug", action="store_true", help="Save debug files (screenshots, HTML) for troubleshooting")
 
     args = parser.parse_args()
 
@@ -1586,7 +1592,7 @@ def main():
                 return 1
 
         # Run sync
-        sync = ZoomSync(config, dry_run=args.dry_run)
+        sync = ZoomSync(config, dry_run=args.dry_run, debug=args.debug)
         count = sync.sync(since)
 
         logger.info(f"Sync completed successfully: {count} recordings")

@@ -25,15 +25,17 @@ class HeypocketSync:
 
     API_BASE_URL = "https://public.heypocketai.com/api/v1"
 
-    def __init__(self, config: ConfigLoader, dry_run: bool = False):
+    def __init__(self, config: ConfigLoader, dry_run: bool = False, debug: bool = False):
         """Initialize Heypocket sync.
 
         Args:
             config: Configuration loader.
             dry_run: If True, don't save files or update state.
+            debug: If True, save debug artifacts for troubleshooting.
         """
         self.config = config
         self.dry_run = dry_run
+        self.debug = debug
         self.platform_config = config.get_platform_config("heypocket")
         self.api_key = self.platform_config.get("api_key")
 
@@ -434,6 +436,7 @@ def main():
     parser.add_argument("--since", help="Fetch meetings since date (ISO format)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be downloaded without saving")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--debug", action="store_true", help="Save debug artifacts for troubleshooting")
 
     args = parser.parse_args()
 
@@ -453,7 +456,7 @@ def main():
                 return 1
 
         # Run sync
-        sync = HeypocketSync(config, dry_run=args.dry_run)
+        sync = HeypocketSync(config, dry_run=args.dry_run, debug=args.debug)
         count = sync.sync(since)
 
         logger.info(f"Sync completed successfully: {count} meetings")

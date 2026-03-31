@@ -21,6 +21,7 @@ CONFIG_FILE=""
 SINCE_DATE=""
 DRY_RUN=""
 VERBOSE=""
+DEBUG=""
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,6 +55,7 @@ OPTIONS:
     --since DATE        Only fetch meetings since date (ISO format: YYYY-MM-DD)
     --dry-run          Show what would be downloaded without saving
     --verbose          Enable verbose logging
+    --debug            Save debug artifacts (screenshots, HTML) for troubleshooting
     -h, --help         Show this help message
 
 EXAMPLES:
@@ -87,6 +89,10 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN="--dry-run"
             shift
             ;;
+        --debug)
+            DEBUG="--debug"
+            shift
+            ;;
         --verbose)
             VERBOSE="--verbose"
             shift
@@ -109,6 +115,7 @@ COMMON_ARGS=""
 [[ -n "$SINCE_DATE" ]] && COMMON_ARGS="$COMMON_ARGS --since $SINCE_DATE"
 [[ -n "$DRY_RUN" ]] && COMMON_ARGS="$COMMON_ARGS $DRY_RUN"
 [[ -n "$VERBOSE" ]] && COMMON_ARGS="$COMMON_ARGS $VERBOSE"
+[[ -n "$DEBUG" ]] && COMMON_ARGS="$COMMON_ARGS $DEBUG"
 
 # Virtual environment directory (inside project)
 VENV_DIR="$SCRIPT_DIR/.venv"
