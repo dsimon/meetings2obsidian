@@ -52,7 +52,7 @@ class StateManager:
         """)
 
         conn.commit()
-        logger.info(f"Initialized state database at {self.db_path}")
+        logger.debug(f"Initialized state database at {self.db_path}")
         return conn
 
     def is_meeting_downloaded(self, meeting_id: str, platform: str) -> bool:
@@ -99,7 +99,7 @@ class StateManager:
                 (meeting_id, platform, meeting_title, meeting_date, download_timestamp, file_path),
             )
             self.conn.commit()
-            logger.info(f"Recorded meeting: {meeting_id} ({platform})")
+            logger.debug(f"Recorded meeting: {meeting_id} ({platform})")
         except sqlite3.IntegrityError:
             logger.warning(f"Meeting already recorded: {meeting_id} ({platform})")
 
@@ -139,7 +139,7 @@ class StateManager:
             (platform, timestamp.isoformat()),
         )
         self.conn.commit()
-        logger.info(f"Updated sync time for {platform}: {timestamp.isoformat()}")
+        logger.debug(f"Updated sync time for {platform}: {timestamp.isoformat()}")
 
     def get_downloaded_meetings(
         self, platform: Optional[str] = None, limit: Optional[int] = None
@@ -177,7 +177,7 @@ class StateManager:
         """Close the database connection."""
         if self.conn:
             self.conn.close()
-            logger.info("Closed state database connection")
+            logger.debug("Closed state database connection")
 
     def __enter__(self):
         """Context manager entry."""

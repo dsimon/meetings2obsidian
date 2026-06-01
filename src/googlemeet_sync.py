@@ -82,9 +82,9 @@ class GoogleMeetSync:
             default_profile = Path.home() / ".meetings2obsidian" / "chrome_profile"
             default_profile.mkdir(parents=True, exist_ok=True)
             user_data_dir = str(default_profile)
-            logger.info(f"Using default persistent profile: {user_data_dir}")
+            logger.debug(f"Using default persistent profile: {user_data_dir}")
         else:
-            logger.info(f"Using configured Chrome profile: {user_data_dir}")
+            logger.debug(f"Using configured Chrome profile: {user_data_dir}")
 
         self.context = playwright.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
@@ -267,7 +267,7 @@ class GoogleMeetSync:
             logger.debug(f"Context has {len(pages)} page(s)")
 
             if not pages:
-                logger.info("No pages in context, creating new page")
+                logger.debug("No pages in context, creating new page")
                 self.page = self.context.new_page()
                 return
 
@@ -286,22 +286,22 @@ class GoogleMeetSync:
 
             if best_page:
                 self.page = best_page
-                logger.info(f"Using Google page: {self.page.url}")
+                logger.debug(f"Using Google page: {self.page.url}")
             elif pages:
                 self.page = pages[-1]
                 try:
-                    logger.info(f"Using most recent page: {self.page.url}")
+                    logger.debug(f"Using most recent page: {self.page.url}")
                 except Exception:
-                    logger.info("Using most recent page (URL not accessible)")
+                    logger.debug("Using most recent page (URL not accessible)")
             else:
-                logger.info("Creating new page as fallback")
+                logger.debug("Creating new page as fallback")
                 self.page = self.context.new_page()
 
         except Exception as e:
             logger.warning(f"Error refreshing page reference: {e}")
             try:
                 self.page = self.context.new_page()
-                logger.info("Created new page after error")
+                logger.debug("Created new page after error")
             except Exception as e2:
                 logger.error(f"Could not create new page: {e2}")
 
@@ -312,7 +312,7 @@ class GoogleMeetSync:
             True if navigation successful and authenticated, False otherwise.
         """
         try:
-            logger.info("Navigating to Google Drive...")
+            logger.debug("Navigating to Google Drive...")
             self.page.goto(self.DRIVE_URL, wait_until="domcontentloaded", timeout=60000)
             self._wait_for_page_ready(timeout=10000)
 
@@ -439,7 +439,7 @@ class GoogleMeetSync:
         try:
             # Search for "Meet Recordings" folder in Drive
             search_url = self.DRIVE_SEARCH_URL.format(query="Meet Recordings")
-            logger.info("Searching for 'Meet Recordings' folder in Google Drive...")
+            logger.debug("Searching for 'Meet Recordings' folder in Google Drive...")
             self.page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
             self._wait_for_page_ready(timeout=15000)
             time.sleep(3)  # Extra wait for Drive SPA to render results
@@ -456,7 +456,7 @@ class GoogleMeetSync:
                 try:
                     folder_el = self.page.locator(selector).first
                     if folder_el.count() > 0:
-                        logger.info("Found 'Meet Recordings' folder, opening...")
+                        logger.debug("Found 'Meet Recordings' folder, opening...")
                         folder_el.dblclick()
                         self._wait_for_page_ready(timeout=15000)
                         time.sleep(3)
@@ -467,7 +467,7 @@ class GoogleMeetSync:
 
             if not folder_clicked:
                 # Try direct navigation to the folder by searching
-                logger.info("Could not click folder, trying direct folder search...")
+                logger.debug("Could not click folder, trying direct folder search...")
                 # Navigate to My Drive and look for the folder
                 self.page.goto(
                     "https://drive.google.com/drive/folders/",
@@ -496,7 +496,7 @@ class GoogleMeetSync:
 
             if folder_clicked:
                 docs = self._collect_doc_links_from_drive_page()
-                logger.info(f"Found {len(docs)} docs in Meet Recordings folder")
+                logger.debug(f"Found {len(docs)} docs in Meet Recordings folder")
             else:
                 logger.warning("Could not find 'Meet Recordings' folder — check googlemeet_debug_drive_page.html")
 
@@ -515,13 +515,13 @@ class GoogleMeetSync:
 
         try:
             search_url = self.DRIVE_SEARCH_URL.format(query="Notes by Gemini")
-            logger.info("Searching Google Drive for 'Notes by Gemini' documents...")
+            logger.debug("Searching Google Drive for 'Notes by Gemini' documents...")
             self.page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
             self._wait_for_page_ready(timeout=15000)
             time.sleep(3)  # Extra wait for Drive SPA to render results
 
             docs = self._collect_doc_links_from_drive_page()
-            logger.info(f"Found {len(docs)} 'Notes by Gemini' documents")
+            logger.debug(f"Found {len(docs)} 'Notes by Gemini' documents")
 
         except Exception as e:
             logger.error(f"Error searching for Gemini notes: {e}")
@@ -542,7 +542,7 @@ class GoogleMeetSync:
         docs = []
 
         try:
-            logger.info("Navigating to 'Shared with me' in Google Drive...")
+            logger.debug("Navigating to 'Shared with me' in Google Drive...")
             self.page.goto(
                 "https://drive.google.com/drive/shared-with-me",
                 wait_until="domcontentloaded",
@@ -560,7 +560,7 @@ class GoogleMeetSync:
                 if any(kw in title_lower for kw in gemini_keywords):
                     docs.append(doc)
 
-            logger.info(
+            logger.debug(
                 f"Found {len(docs)} Gemini notes in 'Shared with me' "
                 f"(out of {len(all_docs)} total shared documents)"
             )
@@ -773,7 +773,7 @@ class GoogleMeetSync:
 
                 # Deduplicate (same doc may appear in multiple sources)
                 all_docs = self._deduplicate_docs(all_docs)
-                logger.info(f"Total unique documents found: {len(all_docs)}")
+                logger.debug(f"Total unique documents found: {len(all_docs)}")
 
                 if not all_docs:
                     logger.info("No meeting documents found in Google Drive")
@@ -836,9 +836,9 @@ class GoogleMeetSync:
                         }
                     )
 
-                    logger.info(f"Fetched: {clean_title} ({meeting_date.date()})")
+                    logger.debug(f"Fetched: {clean_title} ({meeting_date.date()})")
 
-                logger.info(f"Fetched {len(meetings)} meeting notes from Google Drive")
+                logger.debug(f"Fetched {len(meetings)} meeting notes from Google Drive")
                 return meetings
 
             finally:
@@ -931,7 +931,7 @@ class GoogleMeetSync:
             logger.info("Google Meet sync is disabled in configuration")
             return 0
 
-        logger.info("Starting Google Meet sync (Google Drive)")
+        logger.debug("Starting Google Meet sync (Google Drive)")
 
         # Initialize formatter and state manager
         output_path = self.config.get_output_path()
@@ -945,18 +945,18 @@ class GoogleMeetSync:
                 # Explicit --since parameter provided
                 if last_sync_time and last_sync_time < since:
                     fetch_since = last_sync_time
-                    logger.info(f"Using last sync time {last_sync_time.date()} (earlier than --since {since.date()})")
+                    logger.debug(f"Using last sync time {last_sync_time.date()} (earlier than --since {since.date()})")
                 else:
                     fetch_since = since
-                    logger.info(f"Using explicit --since date: {since.date()}")
+                    logger.debug(f"Using explicit --since date: {since.date()}")
             else:
                 # No --since parameter, use last sync time or default to 30 days
                 fetch_since = last_sync_time
                 if fetch_since:
-                    logger.info(f"Using last sync time: {fetch_since.date()}")
+                    logger.debug(f"Using last sync time: {fetch_since.date()}")
                 else:
                     fetch_since = datetime.now() - timedelta(days=30)
-                    logger.info("No last sync time, defaulting to last 30 days")
+                    logger.debug("No last sync time, defaulting to last 30 days")
 
             # Fetch meetings
             meetings = self.fetch_meetings(fetch_since)

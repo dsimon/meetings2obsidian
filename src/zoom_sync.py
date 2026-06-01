@@ -71,9 +71,9 @@ class ZoomSync:
             default_profile = Path.home() / ".meetings2obsidian" / "chrome_profile"
             default_profile.mkdir(parents=True, exist_ok=True)
             user_data_dir = str(default_profile)
-            logger.info(f"Using default persistent profile: {user_data_dir}")
+            logger.debug(f"Using default persistent profile: {user_data_dir}")
         else:
-            logger.info(f"Using configured Chrome profile: {user_data_dir}")
+            logger.debug(f"Using configured Chrome profile: {user_data_dir}")
 
         self.context = playwright.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
@@ -209,7 +209,7 @@ class ZoomSync:
 
             if not pages:
                 # No pages exist, create a new one
-                logger.info("No pages in context, creating new page")
+                logger.debug("No pages in context, creating new page")
                 self.page = self.context.new_page()
                 return
 
@@ -228,17 +228,17 @@ class ZoomSync:
 
             if best_page:
                 self.page = best_page
-                logger.info(f"Using Zoom page: {self.page.url}")
+                logger.debug(f"Using Zoom page: {self.page.url}")
             elif pages:
                 # No Zoom page found, use the most recent one
                 self.page = pages[-1]
                 try:
-                    logger.info(f"Using most recent page: {self.page.url}")
+                    logger.debug(f"Using most recent page: {self.page.url}")
                 except Exception:
-                    logger.info("Using most recent page (URL not accessible)")
+                    logger.debug("Using most recent page (URL not accessible)")
             else:
                 # Create a new page as fallback
-                logger.info("Creating new page as fallback")
+                logger.debug("Creating new page as fallback")
                 self.page = self.context.new_page()
 
         except Exception as e:
@@ -246,7 +246,7 @@ class ZoomSync:
             # Try to create a new page as last resort
             try:
                 self.page = self.context.new_page()
-                logger.info("Created new page after error")
+                logger.debug("Created new page after error")
             except Exception as e2:
                 logger.error(f"Could not create new page: {e2}")
 
@@ -259,7 +259,7 @@ class ZoomSync:
         try:
             # Try the first URL to trigger login if needed
             first_url = self.ZOOM_SUMMARIES_URLS[0]
-            logger.info(f"Navigating to Zoom summaries page: {first_url}")
+            logger.debug(f"Navigating to Zoom summaries page: {first_url}")
             self.page.goto(first_url, wait_until="domcontentloaded", timeout=60000)
             self._wait_for_page_ready(timeout=10000)
 
@@ -281,10 +281,10 @@ class ZoomSync:
                 logger.debug(f"Current URL after login: {current_url}")
                 if "summary" in current_url and "zoom.us" in current_url:
                     # Already on summaries page, wait for it to load
-                    logger.info("Already on summaries page, waiting for content to load...")
+                    logger.debug("Already on summaries page, waiting for content to load...")
                     self._wait_for_page_ready(timeout=10000)
                     if self._page_has_summaries_content():
-                        logger.info(f"Successfully loaded summaries from: {current_url}")
+                        logger.debug(f"Successfully loaded summaries from: {current_url}")
                         return True
             except Exception as e:
                 logger.debug(f"Error checking current URL: {e}")
@@ -292,7 +292,7 @@ class ZoomSync:
             # Now try each URL until we find one that works
             for url in self.ZOOM_SUMMARIES_URLS:
                 try:
-                    logger.info(f"Trying summaries URL: {url}")
+                    logger.debug(f"Trying summaries URL: {url}")
 
                     # Verify page is still valid before navigation
                     try:
@@ -312,7 +312,7 @@ class ZoomSync:
 
                     # Check if we can see summaries-related content
                     if self._page_has_summaries_content():
-                        logger.info(f"Successfully loaded summaries from: {url}")
+                        logger.debug(f"Successfully loaded summaries from: {url}")
                         return True
                     else:
                         # Save debug info for troubleshooting
@@ -332,7 +332,7 @@ class ZoomSync:
                             logger.debug(f"Page settled at: {current_url}")
                             if "summary" in current_url and "zoom.us" in current_url:
                                 if self._page_has_summaries_content():
-                                    logger.info(f"Successfully loaded summaries after redirect: {current_url}")
+                                    logger.debug(f"Successfully loaded summaries after redirect: {current_url}")
                                     return True
                         except Exception:
                             pass
@@ -344,7 +344,7 @@ class ZoomSync:
                     continue
 
             # If direct URLs don't work, try navigating via sidebar
-            logger.info("Trying to navigate via sidebar...")
+            logger.debug("Trying to navigate via sidebar...")
             if self._navigate_via_sidebar():
                 return True
 
@@ -381,7 +381,7 @@ class ZoomSync:
                 try:
                     link = self.page.locator(selector).first
                     if link.count() > 0:
-                        logger.info(f"Found Summaries link with selector: {selector}")
+                        logger.debug(f"Found Summaries link with selector: {selector}")
                         link.click()
                         self._wait_for_page_ready(timeout=10000)
                         break
@@ -399,7 +399,7 @@ class ZoomSync:
                 try:
                     link = self.page.locator(selector).first
                     if link.count() > 0:
-                        logger.info("Found My Summaries link, clicking...")
+                        logger.debug("Found My Summaries link, clicking...")
                         link.click()
                         self._wait_for_page_ready(timeout=10000)
 
@@ -464,7 +464,7 @@ class ZoomSync:
             try:
                 tab = self.page.locator(tab_selector).first
                 if tab.count() > 0:
-                    logger.info(f"Trying tab: {tab_selector}")
+                    logger.debug(f"Trying tab: {tab_selector}")
                     tab.click()
                     self._wait_for_page_ready(timeout=8000)
                     return True
@@ -495,7 +495,7 @@ class ZoomSync:
 
             for selector in date_filter_selectors:
                 if self.page.locator(selector).count() > 0:
-                    logger.info(f"Found date filter: {selector}")
+                    logger.debug(f"Found date filter: {selector}")
                     # Implementation would depend on Zoom's specific UI
                     break
 
@@ -522,7 +522,7 @@ class ZoomSync:
             for indicator in no_results_indicators:
                 try:
                     if self.page.locator(indicator).count() > 0:
-                        logger.info("Page shows no recordings available")
+                        logger.debug("Page shows no recordings available")
                         # Try other tabs before giving up
                         if self._try_other_tabs():
                             # Re-run extraction after switching tabs
@@ -578,7 +578,7 @@ class ZoomSync:
                     logger.debug("Saved debug HTML to zoom_debug_page.html")
                 return []
 
-            logger.info(f"Found {len(recording_elements)} recording elements")
+            logger.debug(f"Found {len(recording_elements)} recording elements")
 
             for element in recording_elements:
                 try:
@@ -823,7 +823,7 @@ class ZoomSync:
         Returns:
             Summary text or "No summary available".
         """
-        logger.info(f"Waiting up to {max_wait}s for summary content to load...")
+        logger.debug(f"Waiting up to {max_wait}s for summary content to load...")
 
         # Save debug files ONCE at the start (not per-poll)
         if self.debug:
@@ -838,7 +838,7 @@ class ZoomSync:
         iframe_selector = "iframe[src*='docs.zoom.us'], iframe[title*='Summary'], iframe[src*='zoom.us/doc']"
         try:
             self.page.wait_for_selector(iframe_selector, timeout=20000, state="attached")
-            logger.info("Summary iframe appeared, waiting for content to render...")
+            logger.debug("Summary iframe appeared, waiting for content to render...")
             time.sleep(5)
         except PlaywrightTimeoutError:
             # Log what iframes DO exist to aid debugging
@@ -848,9 +848,9 @@ class ZoomSync:
                     for iframe in iframes:
                         src = iframe.get_attribute("src") or "(no src)"
                         title = iframe.get_attribute("title") or "(no title)"
-                        logger.info(f"  Found iframe: src={src[:100]}, title={title}")
+                        logger.debug(f"  Found iframe: src={src[:100]}, title={title}")
                 else:
-                    logger.info("  No iframes found on page at all")
+                    logger.debug("  No iframes found on page at all")
             except Exception:
                 pass
             logger.warning("Expected summary iframe did not appear within 20s")
@@ -874,7 +874,7 @@ class ZoomSync:
                 if summary == last_summary:
                     stable_count += 1
                     if stable_count >= 2:
-                        logger.info(
+                        logger.debug(
                             f"Summary content stabilized after {time.time() - start_time:.1f}s ({len(summary)} chars)"
                         )
                         return summary
@@ -938,18 +938,18 @@ class ZoomSync:
 
             # If no Zoom doc frame found, try the largest non-utility iframe
             if not frame:
-                logger.info(
+                logger.debug(
                     f"No Zoom doc iframe found among {len(candidate_frames)} frame(s). Trying largest content frame..."
                 )
                 for f in candidate_frames:
-                    logger.info(f"  Frame URL: {f.url[:120]}")
+                    logger.debug(f"  Frame URL: {f.url[:120]}")
                 # Use the first non-trivial frame (skip analytics/tracking iframes)
                 for f in candidate_frames:
                     try:
                         text = f.locator("body").inner_text(timeout=3000)
                         if text and len(text.strip()) > 100:
                             frame = f
-                            logger.info(f"  Using frame with {len(text.strip())} chars of text")
+                            logger.debug(f"  Using frame with {len(text.strip())} chars of text")
                             break
                     except Exception:
                         continue
@@ -1393,11 +1393,11 @@ class ZoomSync:
                 if since:
                     recordings = [r for r in recordings if r.get("date", datetime.now()) >= since]
 
-                logger.info(f"Found {len(recordings)} recordings to process")
+                logger.debug(f"Found {len(recordings)} recordings to process")
 
                 # Fetch summaries for each recording
                 for i, recording in enumerate(recordings):
-                    logger.info(f"Processing recording {i + 1}/{len(recordings)}: {recording.get('title', 'Unknown')}")
+                    logger.debug(f"Processing recording {i + 1}/{len(recordings)}: {recording.get('title', 'Unknown')}")
                     summary = self._fetch_recording_summary(recording)
                     recording["summary"] = summary
 
@@ -1418,7 +1418,7 @@ class ZoomSync:
                 if self.context:
                     self.context.close()
 
-        logger.info(f"Fetched {len(all_recordings)} recordings from Zoom")
+        logger.debug(f"Fetched {len(all_recordings)} recordings from Zoom")
         return all_recordings
 
     def process_recording(
@@ -1505,7 +1505,7 @@ class ZoomSync:
             logger.info("Zoom sync is disabled in configuration")
             return 0
 
-        logger.info("Starting Zoom sync (browser automation)")
+        logger.debug("Starting Zoom sync (browser automation)")
 
         # Initialize formatter and state manager
         output_path = self.config.get_output_path()
@@ -1519,18 +1519,18 @@ class ZoomSync:
                 # Explicit --since parameter provided
                 if last_sync_time and last_sync_time < since:
                     fetch_since = last_sync_time
-                    logger.info(f"Using last sync time {last_sync_time.date()} (earlier than --since {since.date()})")
+                    logger.debug(f"Using last sync time {last_sync_time.date()} (earlier than --since {since.date()})")
                 else:
                     fetch_since = since
-                    logger.info(f"Using explicit --since date: {since.date()}")
+                    logger.debug(f"Using explicit --since date: {since.date()}")
             else:
                 # No --since parameter, use last sync time or default to 30 days
                 fetch_since = last_sync_time
                 if fetch_since:
-                    logger.info(f"Using last sync time: {fetch_since.date()}")
+                    logger.debug(f"Using last sync time: {fetch_since.date()}")
                 else:
                     fetch_since = datetime.now() - timedelta(days=30)
-                    logger.info("No last sync time, defaulting to last 30 days")
+                    logger.debug("No last sync time, defaulting to last 30 days")
 
             # Fetch recordings
             recordings = self.fetch_recordings(fetch_since)

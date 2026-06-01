@@ -49,7 +49,7 @@ class ConfigLoader:
         for default_path in self.DEFAULT_CONFIG_PATHS:
             path = Path(default_path)
             if path.exists():
-                logger.info(f"Using config file: {path}")
+                logger.debug(f"Using config file: {path}")
                 return path
 
         raise FileNotFoundError(

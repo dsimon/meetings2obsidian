@@ -99,7 +99,7 @@ class HeypocketSync:
             if isinstance(response, list):
                 # Response is directly a list of recordings
                 all_recordings = response
-                logger.info(f"Fetched {len(all_recordings)} recordings from Heypocket")
+                logger.debug(f"Fetched {len(all_recordings)} recordings from Heypocket")
                 return all_recordings
             elif isinstance(response, dict):
                 # Response has pagination structure
@@ -117,7 +117,7 @@ class HeypocketSync:
                     current_page = 1
 
                 all_recordings.extend(recordings)
-                logger.info(f"Fetched page 1/{total_pages} with {len(recordings)} recordings")
+                logger.debug(f"Fetched page 1/{total_pages} with {len(recordings)} recordings")
 
                 # Fetch remaining pages if any
                 while current_page < total_pages:
@@ -132,9 +132,9 @@ class HeypocketSync:
                         recordings = response if isinstance(response, list) else []
 
                     all_recordings.extend(recordings)
-                    logger.info(f"Fetched page {current_page}/{total_pages} with {len(recordings)} recordings")
+                    logger.debug(f"Fetched page {current_page}/{total_pages} with {len(recordings)} recordings")
 
-                logger.info(f"Fetched total of {len(all_recordings)} recordings from Heypocket")
+                logger.debug(f"Fetched total of {len(all_recordings)} recordings from Heypocket")
                 return all_recordings
             else:
                 logger.warning(f"Unexpected response type: {type(response)}")
@@ -375,7 +375,7 @@ class HeypocketSync:
             logger.info("Heypocket sync is disabled in configuration")
             return 0
 
-        logger.info("Starting Heypocket sync")
+        logger.debug("Starting Heypocket sync")
 
         # Initialize formatter and state manager
         output_path = self.config.get_output_path()
@@ -390,15 +390,15 @@ class HeypocketSync:
                 # Use the earlier of the two dates to ensure we don't miss anything
                 if last_sync_time and last_sync_time < since:
                     fetch_since = last_sync_time
-                    logger.info(f"Using last sync time {last_sync_time.date()} (earlier than --since {since.date()})")
+                    logger.debug(f"Using last sync time {last_sync_time.date()} (earlier than --since {since.date()})")
                 else:
                     fetch_since = since
-                    logger.info(f"Using explicit --since date: {since.date()}")
+                    logger.debug(f"Using explicit --since date: {since.date()}")
             else:
                 # No --since parameter, use last sync time
                 fetch_since = last_sync_time
                 if fetch_since:
-                    logger.info(f"Using last sync time: {fetch_since.date()}")
+                    logger.debug(f"Using last sync time: {fetch_since.date()}")
 
             # Fetch recordings
             recordings = self.fetch_recordings(fetch_since)
