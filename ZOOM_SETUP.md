@@ -79,7 +79,7 @@ python src/zoom_sync.py --verbose --dry-run
 ### Browser Automation Flow
 
 1. **Launch Browser**: Opens Chrome (with or without your profile)
-2. **Navigate to Recordings**: Goes to `https://zoom.us/recording/management`
+2. **Navigate to Summaries**: Goes to `https://zoom.us/user/meeting/summary#/list`
 3. **Authentication Check**: Detects if login is needed, waits for manual login if so
 4. **Extract Recordings**: Parses the recordings list from the web page
 5. **Fetch Summaries**: Clicks into each recording to extract AI summary content

@@ -32,7 +32,7 @@ playwright install chromium             # Required for browser automation
 
 # Check state database
 sqlite3 meetings_state.db "SELECT * FROM meetings;"
-sqlite3 meetings_state.db "SELECT * FROM sync_history;"
+sqlite3 meetings_state.db "SELECT * FROM sync_state;"
 
 # Reset state (re-sync everything)
 rm meetings_state.db
@@ -70,7 +70,7 @@ The `tests/` directory is currently empty. When adding tests, follow pytest conv
 ```
 src/
 ├── heypocket_sync.py      # API-based sync (requests library)
-├── googlemeet_sync.py      # Browser automation sync (playwright) — placeholder impl
+├── googlemeet_sync.py      # Browser automation sync (playwright) — full impl
 ├── zoom_sync.py            # Browser automation sync (playwright) — full impl
 └── utils/
     ├── config_loader.py    # YAML config loading + validation
@@ -151,7 +151,7 @@ Include `Raises:` section when the function explicitly raises exceptions.
 
 ### Class Pattern
 Each platform sync module follows the same structure:
-1. Class with `__init__(self, config: ConfigLoader, dry_run: bool = False)`
+1. Class with `__init__(self, config: ConfigLoader, dry_run: bool = False, debug: bool = False)`
 2. `fetch_recordings()` / `fetch_meetings()` — retrieves data from platform
 3. `process_recording()` / `process_meeting()` — processes single item, returns `Optional[Path]`
 4. `sync()` — orchestrates full sync, returns count of synced items
