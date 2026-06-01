@@ -147,7 +147,7 @@ Include `Raises:` section when the function explicitly raises exceptions.
 ### Logging
 - Every module configures logging via `setup_logging(verbose)` at its `main()`.
 - Format: `%(asctime)s - %(name)s - %(levelname)s - %(message)s`
-- Use `logger.debug()` for internal state, `logger.info()` for progress, `logger.warning()` for recoverable issues, `logger.error()` for failures.
+- Use `logger.info()` for user-facing output only — per-meeting saves (`"Saved meeting: {title}"`), per-run summaries (`"X sync complete: N synced"`), login prompts, and dry-run previews. Use `logger.debug()` for everything else: navigation steps, browser init, pagination, watermark dates, state DB ops. `logger.warning()` for recoverable issues, `logger.error()` for failures.
 
 ### Class Pattern
 Each platform sync module follows the same structure:
