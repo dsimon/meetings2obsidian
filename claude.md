@@ -82,5 +82,5 @@ Zoom renders summaries in a cross-origin `docs.zoom.us` iframe using a React/Sla
 - **Imports**: stdlib → third-party → `sys.path.insert(0, ...)` hack → local `from src.utils.X import Y`
 - **Module entry point**: every module ends with `if __name__ == "__main__": sys.exit(main())`.
 - **Error handling**: Specific exception types; bare `except Exception as e` acceptable only at top-level batch loops. Return `None` on failure rather than raising.
-- **Logging**: `logger.debug()` for state, `logger.info()` for progress, `logger.warning()` for recoverable issues, `logger.error()` for failures. `logger.exception()` only under `--verbose`.
+- **Logging**: `logger.info()` for user-facing output only — per-meeting saves, per-run summaries, login prompts, dry-run previews. `logger.debug()` for everything else: navigation steps, browser init, pagination, watermark dates, state DB ops. `logger.warning()` for recoverable issues, `logger.error()` for failures, `logger.exception()` only under `--verbose`.
 - **Ruff config** (`pyproject.toml`): 120-char line length, double quotes, ignored rules: `E402`, `UP006/UP007/UP035/UP045`.
